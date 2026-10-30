@@ -1,5 +1,5 @@
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ContextMenu, type MenuAt } from "@/components/ContextMenu";
 import { MapCanvas, type CanvasHandle } from "@/components/MapCanvas";
 import { Panel } from "@/components/Panel";
@@ -12,6 +12,9 @@ import { useMedia } from "@/lib/useMedia";
 import { roam, roamSpots } from "@/lib/roam";
 import { useOrbiFeed } from "@/live/orbi";
 import { LiveContext, useLiveFeed } from "@/live/prom";
+
+// three.js only loads once someone opens the globe sheet.
+const GlobeCanvas = lazy(() => import("@/components/GlobeCanvas").then((m) => ({ default: m.GlobeCanvas })));
 
 export function App() {
   const prom = useLiveFeed();
@@ -124,7 +127,13 @@ export function App() {
         <TopBar lenses={lenses} current={lens.id} onLens={(id) => toLens(id)} onSearch={() => setSearching(true)} />
         <div className="main">
           <div style={{ position: "relative", minWidth: 0, minHeight: 0, display: "grid" }}>
-            <MapCanvas ref={canvas} lens={lens} zone={view.zone} node={view.node} cover={sheet ? (peek ? "peek" : "open") : "none"} reduced={reduced} onSelect={select} onZone={toZone} onMenu={openMenu} />
+            {lens.view === "globe" ? (
+              <Suspense fallback={<div className="stage" />}>
+                <GlobeCanvas ref={canvas} lens={lens} zone={view.zone} node={view.node} cover={sheet ? (peek ? "peek" : "open") : "none"} reduced={reduced} onSelect={select} onZone={toZone} onMenu={openMenu} />
+              </Suspense>
+            ) : (
+              <MapCanvas ref={canvas} lens={lens} zone={view.zone} node={view.node} cover={sheet ? (peek ? "peek" : "open") : "none"} reduced={reduced} onSelect={select} onZone={toZone} onMenu={openMenu} />
+            )}
             <nav className="overlay crumbs" aria-label="Drill path">
               <button type="button" className="crumb" onClick={() => go({ lens: lens.id })}>
                 <span className="no">{lens.key}</span>
@@ -147,7 +156,7 @@ export function App() {
                 </>
               )}
             </nav>
-            {!view.node && !view.zone && <div className="hint">Click a box or a room to drill in · right-click for actions · 1–{lenses.length} switch sheets · / to find · Esc to back out</div>}
+            {!view.node && !view.zone && <div className="hint">{lens.view === "globe" ? "Drag to turn the globe" : "Click a box or a room to drill in"} · right-click for actions · 1–{lenses.length} switch sheets · / to find · Esc to back out</div>}
           </div>
           <Panel lens={lens} zone={view.zone} node={view.node} sheet={sheet} peek={peek} onTogglePeek={() => setPeek((p) => !p)} onSelect={select} onZone={toZone} onLens={toLens} onMenu={openMenu} />
         </div>

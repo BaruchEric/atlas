@@ -4,7 +4,7 @@ import { NodeView } from "@/components/NodeView";
 import { entities } from "@/data/site";
 import type { Lens, Net, Place } from "@/data/types";
 import { targetAt, type Target } from "@/lib/actions";
-import { fit, pad, routeFrom, routeLens, union, type Rect, type RoutedWire } from "@/lib/geometry";
+import { fit, lightUp, pad, routeLens, union, type Rect, type RoutedWire } from "@/lib/geometry";
 import { liveFor, useLive } from "@/live/prom";
 
 interface Props {
@@ -27,41 +27,8 @@ export interface CanvasHandle {
   zoomAt: (clientX: number, clientY: number) => void;
 }
 
-interface Lit {
-  nodes: Set<string>;
-  wires: Set<string>;
-}
-
 const defaultLegend: Record<Net, string> = { home: "Home LAN", lab: "Lab", air: "Wi-Fi", sto: "Storage", tail: "Tailnet", wan: "WAN", ink: "Link", bad: "Alerts" };
 const netLabel = (net: Net, lens: Lens): string => lens.legend?.[net] ?? defaultLegend[net];
-
-const contains = (a: Place, b: Place) => a !== b && b.x >= a.x && b.y >= a.y && b.x + b.w <= a.x + a.w && b.y + b.h <= a.y + a.h;
-
-// What lights up for a selection: the route from the sheet's origin when it has one,
-// plus direct neighbors, plus any frame the box sits in or boxes inside a frame.
-function lightUp(lens: Lens, wires: RoutedWire[], id: string): Lit | null {
-  const here = lens.places[id];
-  if (!here) return null;
-  const nodes = new Set([id]);
-  const lit = new Set<string>();
-  for (const w of wires) {
-    if (w.from === id || w.to === id) {
-      lit.add(w.id);
-      nodes.add(w.from);
-      nodes.add(w.to);
-    }
-  }
-  if (lens.origin && id !== lens.origin) {
-    for (const w of routeFrom(wires, lens.origin, id)) {
-      lit.add(w.id);
-      nodes.add(w.from);
-    }
-  }
-  for (const [other, p] of Object.entries(lens.places)) {
-    if (contains(p, here) || contains(here, p)) nodes.add(other);
-  }
-  return { nodes, wires: lit };
-}
 
 function lerpView(a: Rect, b: Rect, t: number): Rect {
   // Zoom on a log scale so a deep drill doesn't rush the last stretch.

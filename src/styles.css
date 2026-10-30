@@ -231,6 +231,23 @@ button.chip:hover { border-color: var(--accent); color: var(--accent); }
 .palette li .where { font: 11px var(--mono); color: var(--muted); text-align: right; }
 .palette .empty { padding: 18px; color: var(--muted); }
 
+/* The globe sheet: a canvas, with the names laid over it as buttons that follow the turn */
+.stage.globe canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
+.stage.globe.hovering canvas { cursor: pointer; }
+.globe-labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.globe-label { position: absolute; left: 0; top: 0; translate: -50% 0; pointer-events: auto; cursor: pointer; border: 0; padding: 1px 8px 2px; border-radius: 999px; white-space: nowrap; background: var(--veil); box-shadow: inset 0 0 0 1px var(--rule); font: 700 11.5px/1.35 var(--body); color: var(--fg); transition: background-color .15s, color .15s, box-shadow .15s; }
+.globe-label[data-off="1"] { pointer-events: none; }
+.globe-label.dim { color: var(--muted); box-shadow: none; }
+.globe-label.hover, .globe-label:hover { box-shadow: inset 0 0 0 1.5px var(--accent); }
+.globe-label.node.on { background: var(--accent); color: var(--paper); box-shadow: none; }
+.globe-label.zone { translate: 0 0; padding: 0 2px; background: none; box-shadow: none; font: 700 11px var(--display); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.globe-label.zone.home { color: var(--home); }
+.globe-label.zone.lab { color: var(--lab); }
+.globe-label.zone.host { color: var(--tail); }
+.globe-label.zone.on, .globe-label.zone:hover { color: var(--accent); box-shadow: none; }
+.globe-label:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.globe-fail { position: absolute; left: 16px; right: 16px; top: 40%; margin: 0; text-align: center; color: var(--muted); }
+
 /* Phone and narrow tablet: the panel becomes a bottom sheet over the map. */
 @media (max-width: 860px) {
   .main { grid-template-columns: 1fr; }
@@ -253,6 +270,7 @@ button.chip:hover { border-color: var(--accent); color: var(--accent); }
 @media (prefers-reduced-motion: reduce) {
   .map .wire.flowing, .map .pulse-ring, .map .pulse-breathe, .livepill.live .dot { animation: none; }
   .panel { transition: none; }
+  .globe-label { transition: none; }
 }
 
 /* Right-click menu, and the note a copy leaves behind */

@@ -174,3 +174,36 @@ export function routeFrom(wires: RoutedWire[], origin: string, id: string): Rout
   for (let w = prev.get(id); w; w = prev.get(w.from)) hops.unshift(w);
   return hops;
 }
+
+export interface Lit {
+  nodes: Set<string>;
+  wires: Set<string>;
+}
+
+const contains = (a: Place, b: Place) => a !== b && b.x >= a.x && b.y >= a.y && b.x + b.w <= a.x + a.w && b.y + b.h <= a.y + a.h;
+
+// What lights up for a selection: the route from the sheet's origin when it has one,
+// plus direct neighbors, plus any frame the box sits in or boxes inside a frame.
+export function lightUp(lens: Lens, wires: RoutedWire[], id: string): Lit | null {
+  const here = lens.places[id];
+  if (!here) return null;
+  const nodes = new Set([id]);
+  const lit = new Set<string>();
+  for (const w of wires) {
+    if (w.from === id || w.to === id) {
+      lit.add(w.id);
+      nodes.add(w.from);
+      nodes.add(w.to);
+    }
+  }
+  if (lens.origin && id !== lens.origin) {
+    for (const w of routeFrom(wires, lens.origin, id)) {
+      lit.add(w.id);
+      nodes.add(w.from);
+    }
+  }
+  for (const [other, p] of Object.entries(lens.places)) {
+    if (contains(p, here) || contains(here, p)) nodes.add(other);
+  }
+  return { nodes, wires: lit };
+}

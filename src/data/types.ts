@@ -159,6 +159,8 @@ export interface Lens {
   // Wi-Fi boxes the Orbi feed can move: entity id, then the AP entity it joined, then where to
   // draw it there. The wire keeps the id of the one it replaces so the canvas morphs it.
   roams?: Record<string, Record<string, { place: Place; wire: Wire }>>;
+  // How the canvas draws it. "globe" wraps the sheet onto the titan's globe (see lib/globe.ts).
+  view?: "globe";
 }
 
 // One house: everything the engine draws comes from the site module (site/index.ts, or
@@ -181,6 +183,9 @@ export interface Site {
   // Prometheus's own UI, for "open in Prometheus" links. Live data goes through /prom instead.
   prometheus?: string;
   grafana?: Grafana;
+  // The globe sheet copies one flat sheet: the first with rooms unless from names another.
+  // false leaves it out.
+  globe?: false | { from?: string };
 }
 
 // Dashboard uids the right-click menu links to. Each is optional.

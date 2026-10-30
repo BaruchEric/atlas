@@ -1,30 +1,8 @@
 import { motion } from "motion/react";
 import type { KeyboardEvent, MouseEvent } from "react";
-import type { Entity, Kind, Place } from "@/data/types";
+import type { Entity, Place } from "@/data/types";
+import { kindTone } from "@/lib/kindTone";
 import type { EntityLive } from "@/live/prom";
-
-const tick: Record<Kind, string> = {
-  router: "var(--home)",
-  satellite: "var(--home)",
-  moca: "var(--tail)",
-  switch: "var(--home)",
-  host: "var(--accent)",
-  guest: "var(--home)",
-  group: "var(--tail)",
-  site: "var(--tail)",
-  edge: "var(--air)",
-  job: "var(--ups)",
-  person: "var(--ink)",
-  power: "var(--ups)",
-  hub: "var(--air)",
-  device: "var(--muted)",
-  media: "var(--lab)",
-  phone: "var(--accent)",
-  plug: "var(--ups)",
-  light: "var(--sto)",
-  sensor: "var(--tail)",
-  tailnet: "var(--tail)",
-};
 
 const spring = { type: "spring", stiffness: 120, damping: 20, mass: 0.9 } as const;
 
@@ -122,7 +100,7 @@ export function NodeView({ e, p, live, selected, dim, onPick, reduced }: Props) 
     >
       <motion.rect className="halo" initial={false} animate={{ x: body.x - 4, y: body.y - 4, width: body.width + 8, height: body.height + 8, rx: body.rx + 4 }} transition={move} />
       <motion.rect className="body" initial={false} animate={body} transition={move} />
-      {!ring && !frame && <motion.rect className="tick" x={0} width={3} rx={1.5} fill={tick[e.kind]} initial={false} animate={{ y: 9, height: Math.max(p.h - 18, 8) }} transition={move} />}
+      {!ring && !frame && <motion.rect className="tick" x={0} width={3} rx={1.5} fill={kindTone[e.kind]} initial={false} animate={{ y: 9, height: Math.max(p.h - 18, 8) }} transition={move} />}
       <motion.text className="label" initial={false} animate={{ x: labelX, y: labelY }} transition={move} textAnchor={anchor}>
         {e.label}
       </motion.text>

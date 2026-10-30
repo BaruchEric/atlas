@@ -24,6 +24,21 @@ Keys: `1` to `9` switch sheets, `/` or Cmd-K opens search (names, IPs, MACs, con
 
 Right-click (long-press on a phone, Shift-F10 on a focused box) opens a menu built for what is under the pointer. A box gets copy actions for its IP, MAC, tailnet IP, ssh command and link, its own web UIs, its Grafana and Prometheus pages, and the other sheets that draw it. When something is wrong the fix leads the menu: a host that stopped reporting opens its Grafana page, a failing probe opens its history, a satellite on wireless backhaul jumps to the MoCA adapter on its wired path.
 
+## The globe
+
+The last sheet is the house on a globe, held up by a kneeling titan. It wraps one flat sheet onto the sphere: rooms become curved patches, boxes become small device pieces standing on them, and cables run along the surface. Drag to turn the globe, scroll or pinch to zoom. Picking a box turns it round to the front and lights its route, as on the flat sheet, and the names over the globe are buttons, so Tab walks them and brings a name on the far side round.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/globe-dark.png">
+  <img alt="The example house's wiring wrapped onto a globe that a kneeling stone titan holds up, with small device pieces and coloured cables on it" src="docs/globe-light.png">
+</picture>
+
+It copies the first sheet with rooms on it. Set `globe: { from: "ingress" }` in the site to wrap another, or `globe: false` to leave it out. It takes the next free number key.
+
+three.js loads only when the globe sheet opens. A browser without WebGL gets a note instead, and the flat sheets keep working.
+
+The titan and the device pieces were modelled for this repo in Blender, from the scripts in `models/recipes/`, and live in `src/assets/models/` as GLB files. No outside models are used. Each piece is named by its `kind`, and its materials are named by role (`body`, `trim`, `accent`, `led`, `screen`) so the globe repaints them from the theme. The `led` takes the box's live state. A kind with no piece falls back to a plain block. To rebuild one, run its recipe as a Blender script job; it writes the GLB to `OUT_DIR`.
+
 ## Your own house
 
 Start from the example:
@@ -121,7 +136,8 @@ The atlas has no login. Keep the dev server on localhost and put the production 
 ## Layout
 
 ```
-src/        the app (React, motion, one SVG canvas)
+src/        the app (React, motion, one SVG canvas, three.js for the globe)
+models/     the Blender scripts that build the titan and the device pieces
 server/     the /orbi feed and the site lookup the servers share
 example/    the made-up house, its network doc and its tests
 test/       parser tests and checks that hold for any site
