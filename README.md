@@ -127,3 +127,7 @@ example/    the made-up house, its network doc and its tests
 test/       parser tests and checks that hold for any site
 site/       your house (gitignored)
 ```
+
+## License
+
+MIT. See [LICENSE](LICENSE).
