@@ -126,6 +126,9 @@ interface Device {
   ring: THREE.Mesh;
   // Where its label hangs, on the unrotated globe.
   label: THREE.Vector3;
+  // The piece's stand and the surface normal under it; frames have no piece.
+  holder?: THREE.Group;
+  normal?: THREE.Vector3;
 }
 
 interface WireLine {
@@ -303,6 +306,8 @@ export class GlobeScene {
     group.userData.id = e.id;
     const materials: THREE.MeshStandardMaterial[] = [];
     const frame = place.shape === "frame";
+    let stand: THREE.Group | undefined;
+    let normal: THREE.Vector3 | undefined;
     // Frames hold other boxes; on the globe they are a patch with a label and no piece.
     if (!frame) {
       const piece = this.piece(e.kind);
@@ -310,20 +315,17 @@ export class GlobeScene {
       const sz = box.getSize(new THREE.Vector3());
       const s = Math.min((place.w * p.scale * 0.7) / Math.max(sz.x, 1e-3), (PIECE_MAX * (pieceSize[e.kind] ?? 1)) / Math.max(sz.x, sz.y, sz.z, 1e-3));
       const holder = new THREE.Group();
-      piece.position.set(-(box.min.x + box.max.x) / 2, -box.min.y, -(box.min.z + box.max.z) / 2);
+      // Base and back both rest on the globe, so a piece that stands straight up at the rim
+      // lies along the surface instead of sinking into it.
+      piece.position.set(-(box.min.x + box.max.x) / 2, -box.min.y, -box.min.z);
       holder.add(piece);
       holder.scale.setScalar(s);
       const cx = place.x + place.w / 2;
       const base = place.y + place.h * 0.72;
-      const n = vec(p, cx, base, 1).normalize();
-      const north = new THREE.Vector3(0, 1, 0).sub(n.clone().multiplyScalar(n.y)).normalize();
-      const east = new THREE.Vector3().crossVectors(north, n).normalize();
-      // Stand the piece on the globe, then lean it back toward the viewer.
-      const up = n.clone().multiplyScalar(Math.sin(TILT)).add(north.clone().multiplyScalar(Math.cos(TILT)));
-      const front = new THREE.Vector3().crossVectors(east, up).normalize();
-      holder.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(east, up, front));
-      holder.position.copy(n).multiplyScalar(R * 1.002);
+      normal = vec(p, cx, base, 1).normalize();
+      holder.position.copy(normal).multiplyScalar(R * 1.002);
       group.add(holder);
+      stand = holder;
       piece.traverse((o) => {
         if (!(o instanceof THREE.Mesh)) return;
         o.userData.id = e.id;
@@ -341,7 +343,7 @@ export class GlobeScene {
     const ring = new THREE.Mesh(outlineRing(p, place, R * 1.0025), new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false }));
     ring.visible = false;
     this.sheet.add(chip, group, ring);
-    return { id: e.id, kind: e.kind, group, materials, chip, ring, label: vec(p, place.x + place.w / 2, place.y + place.h + 4, R * 1.003) };
+    return { id: e.id, kind: e.kind, group, materials, chip, ring, label: vec(p, place.x + place.w / 2, place.y + place.h + 4, R * 1.003), holder: stand, normal };
   }
 
   // A kit piece by kind, or a chamfered block when the kit lacks it or hasn't loaded.
@@ -628,9 +630,32 @@ export class GlobeScene {
     this.globe.quaternion.setFromEuler(new THREE.Euler(s.pitch, s.yaw, 0, "XYZ"));
     this.camera.position.set(0, s.lookY + s.dist * 0.1, s.dist);
     this.camera.lookAt(0, s.lookY, 0);
+    this.standPieces();
     this.renderer.render(this.scene, this.camera);
     this.onFrame?.();
   };
+
+  // Every piece stands up the way the screen does, and leans back toward the viewer only as
+  // far as it faces them, so the ones near the rim stay upright instead of lying sideways.
+  private standPieces() {
+    const toLocal = this.globe.quaternion.clone().invert();
+    const eye = this.camera.position.clone().normalize().applyQuaternion(toLocal);
+    const sky = new THREE.Vector3(0, 1, 0).applyQuaternion(toLocal);
+    const basis = new THREE.Matrix4();
+    for (const d of this.devices.values()) {
+      const n = d.normal;
+      if (!d.holder || !n) continue;
+      const t = sky.clone().addScaledVector(n, -sky.dot(n));
+      // Facing straight up at the sky: fall back to the globe's own north.
+      if (t.lengthSq() < 1e-4) t.set(0, 1, 0).addScaledVector(n, -n.y);
+      t.normalize();
+      const east = new THREE.Vector3().crossVectors(t, n).normalize();
+      const lean = TILT * THREE.MathUtils.clamp(n.dot(eye), 0, 1);
+      const up = t.multiplyScalar(Math.cos(lean)).addScaledVector(n, Math.sin(lean));
+      const front = new THREE.Vector3().crossVectors(east, up).normalize();
+      d.holder.quaternion.setFromRotationMatrix(basis.makeBasis(east, up, front));
+    }
+  }
 
   invalidate() {
     this.dirty = true;
