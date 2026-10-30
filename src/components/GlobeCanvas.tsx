@@ -182,6 +182,7 @@ export function GlobeCanvas({ lens, zone, node, cover, reduced, onSelect, onZone
   const onLabel = (e: React.PointerEvent | React.MouseEvent) => (e.target instanceof Element ? e.target.closest<HTMLElement>(".globe-label") : null);
 
   const onPointerDown = (e: React.PointerEvent) => {
+    sceneRef.current?.poke();
     if (e.button === 2) return;
     window.clearTimeout(press.current);
     menuPress.current = false;
@@ -203,6 +204,7 @@ export function GlobeCanvas({ lens, zone, node, cover, reduced, onSelect, onZone
   const onPointerMove = (e: React.PointerEvent) => {
     const g = gesture.current;
     const scene = sceneRef.current;
+    scene?.poke();
     if (!g || !pointers.current.has(e.pointerId)) {
       if (e.pointerType === "mouse" && !onLabel(e)) {
         const p = pickAt(e.clientX, e.clientY);
@@ -292,8 +294,18 @@ export function GlobeCanvas({ lens, zone, node, cover, reduced, onSelect, onZone
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
-      onPointerLeave={() => setHover(null)}
+      // A pointer over the globe or focus on a name holds the idle spin, so a name stays put
+      // long enough to click.
+      onPointerEnter={() => sceneRef.current?.hold("pointer", true)}
+      onPointerLeave={() => {
+        setHover(null);
+        sceneRef.current?.hold("pointer", false);
+      }}
       onContextMenu={onContextMenu}
+      onFocus={() => sceneRef.current?.hold("focus", true)}
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget)) sceneRef.current?.hold("focus", false);
+      }}
     >
       <canvas ref={canvasRef} aria-label={`${lens.title}. Drag to turn the globe, scroll or pinch to zoom. The names below are buttons.`} role="img" />
       {failed && <p className="globe-fail">This browser can't draw the globe because WebGL is off or unavailable. The flat sheets still work: press 1.</p>}

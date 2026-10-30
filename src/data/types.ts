@@ -159,7 +159,7 @@ export interface Lens {
   // Wi-Fi boxes the Orbi feed can move: entity id, then the AP entity it joined, then where to
   // draw it there. The wire keeps the id of the one it replaces so the canvas morphs it.
   roams?: Record<string, Record<string, { place: Place; wire: Wire }>>;
-  // How the canvas draws it. "globe" wraps the sheet onto the titan's globe (see lib/globe.ts).
+  // How the canvas draws it. "globe" wraps the sheet onto a globe (see lib/globe.ts).
   view?: "globe";
 }
 

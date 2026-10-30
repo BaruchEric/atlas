@@ -1,4 +1,4 @@
-// The globe sheet: one of the site's flat sheets wrapped onto the sphere the titan holds.
+// The globe sheet: one of the site's flat sheets wrapped onto a sphere.
 // Pure, so test/globe.test.ts runs it without WebGL. GlobeCanvas does the drawing.
 import type { Lens, Site } from "@/data/types";
 

@@ -1,10 +1,15 @@
-// The three.js side of the globe sheet: the titan, the globe in his hands, and the sheet
-// wrapped onto it. GlobeCanvas owns the React side (labels, pointer, props) and drives this.
+// The three.js side of the globe sheet: the globe and the sheet wrapped onto it, drawn as
+// paper under the light and dark themes and as a projection under holo. GlobeCanvas owns the
+// React side (labels, pointer, props) and drives this.
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { Line2 } from "three/examples/jsm/lines/Line2.js";
 import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
+import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
+import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
+import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { entities } from "@/data/site";
 import type { Entity, Kind, Lens, Net, Place, Zone } from "@/data/types";
 import type { Lit, RoutedWire } from "@/lib/geometry";
@@ -27,6 +32,8 @@ export interface Tokens {
   warn: THREE.Color;
   bad: THREE.Color;
   dark: boolean;
+  // The holo theme: bloom, a lit rim, edge-lit pieces and the projector under the globe.
+  holo: boolean;
   net: Record<Net, THREE.Color>;
   tone: Record<string, THREE.Color>;
 }
@@ -49,6 +56,7 @@ export function readTokens(): Tokens {
     warn: c("warn"),
     bad: c("bad"),
     dark: bg.getHSL({ h: 0, s: 0, l: 0 }).l < 0.4,
+    holo: css.getPropertyValue("--globe-style").trim() === "holo",
     net: { home: c("home"), lab: c("lab"), air: c("air"), sto: c("sto"), tail: c("tail"), wan: c("ink"), ink: c("ink"), bad: c("bad") },
     tone,
   };
@@ -73,9 +81,6 @@ export type Led = "up" | "down" | "asleep" | "off" | "none";
 
 interface Models {
   kit: Map<string, THREE.Object3D>;
-  titan: THREE.Object3D | null;
-  anchor: THREE.Vector3;
-  radius: number;
 }
 
 let modelsPromise: Promise<Models> | null = null;
@@ -92,18 +97,10 @@ function loadModels(): Promise<Models> {
         return null;
       }
     };
-    const [titan, gear, world] = await Promise.all([load("atlas-titan"), load("kit-gear"), load("kit-world")]);
+    const [gear, world] = await Promise.all([load("kit-gear"), load("kit-world")]);
     const kit = new Map<string, THREE.Object3D>();
     for (const root of [gear, world]) for (const child of root?.children ?? []) kit.set(child.name, child);
-    const anchor = new THREE.Vector3();
-    let radius = 1;
-    const a = titan?.getObjectByName("globe_anchor");
-    if (titan && a) {
-      titan.updateMatrixWorld(true);
-      a.getWorldPosition(anchor);
-      radius = Number(a.userData.radius) || 1;
-    }
-    return { kit, titan, anchor, radius };
+    return { kit };
   })();
   return modelsPromise;
 }
@@ -122,6 +119,8 @@ interface Device {
   kind: Kind;
   group: THREE.Group;
   materials: THREE.MeshStandardMaterial[];
+  // Holo only: the lit edges drawn over the piece.
+  edges: THREE.LineBasicMaterial[];
   chip: THREE.Mesh;
   ring: THREE.Mesh;
   // Where its label hangs, on the unrotated globe.
@@ -147,6 +146,11 @@ const PIECE_MAX = 0.17;
 // Every piece in the kit is scaled to a unit box; these put back their sizes next to each
 // other, so a satellite stands lower than its router and a plug is smaller than a server.
 const pieceSize: Partial<Record<Kind, number>> = { guest: 0.8, satellite: 0.76, host: 0.79, device: 0.86, moca: 0.64, power: 0.74, plug: 0.62 };
+// Holo: the projector's rings sit this far below the globe's center, and the globe turns by
+// itself at SPIN radians a second once the overview has been left alone for IDLE ms.
+const BASE_Y = -1.32;
+const SPIN = 0.05;
+const IDLE = 4000;
 
 export class GlobeScene {
   readonly renderer: THREE.WebGLRenderer;
@@ -156,7 +160,19 @@ export class GlobeScene {
   private sheet = new THREE.Group();
   private stand = new THREE.Group();
   private surface: THREE.Mesh;
+  private paperSurface = new THREE.MeshStandardMaterial({ roughness: 0.85, metalness: 0 });
+  private holoSurface = rimMaterial();
+  private atmosphere = new THREE.Mesh(new THREE.SphereGeometry(R * 1.16, 64, 48), haloMaterial(R / 1.16));
+  private projector = projectorBase();
   private graticule: THREE.LineSegments;
+  private hemi = new THREE.HemisphereLight(0xffffff, 0x6f7d79, 1.15);
+  private key = new THREE.DirectionalLight(0xffffff, 2.2);
+  private rim = new THREE.DirectionalLight(0xffffff, 0.9);
+  private post: { composer: EffectComposer; bloom: UnrealBloomPass } | null = null;
+  private idleSince = performance.now();
+  // Reasons the idle spin waits: a pointer over the stage, or focus on one of its names.
+  private holds = new Set<string>();
+  private lastFrame = performance.now();
   private devices = new Map<string, Device>();
   private zones = new Map<string, { mesh: THREE.Mesh; outline: Line2; zone: Zone; label: THREE.Vector3 }>();
   private wires: WireLine[] = [];
@@ -188,53 +204,56 @@ export class GlobeScene {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.tokens = readTokens();
 
-    this.scene.add(new THREE.HemisphereLight(0xffffff, 0x6f7d79, 1.15));
-    const key = new THREE.DirectionalLight(0xffffff, 2.2);
-    key.position.set(-3, 5, 6);
-    const rim = new THREE.DirectionalLight(0xffffff, 0.9);
-    rim.position.set(4, 2, -5);
-    this.scene.add(key, rim);
+    this.key.position.set(-3, 5, 6);
+    this.rim.position.set(4, 2, -5);
+    this.scene.add(this.hemi, this.key, this.rim);
 
-    this.surface = new THREE.Mesh(new THREE.SphereGeometry(R, 96, 64), new THREE.MeshStandardMaterial({ roughness: 0.85, metalness: 0 }));
+    this.surface = new THREE.Mesh(new THREE.SphereGeometry(R, 96, 64), this.paperSurface);
     this.surface.userData.pick = "surface";
     this.graticule = new THREE.LineSegments(graticuleGeometry(), new THREE.LineBasicMaterial({ transparent: true, opacity: 0.9 }));
     this.globe.add(this.surface, this.graticule, this.sheet);
+    this.projector.position.y = BASE_Y;
+    this.stand.add(this.atmosphere, this.projector);
     this.scene.add(this.globe, this.stand);
+    this.applyStyle();
 
     void loadModels().then((m) => {
       if (this.disposed) return;
       this.models = m;
-      this.placeTitan();
       if (this.lens) this.buildDevices();
       this.applyColors();
-      // The overview frames the plinth, which only now has a size.
-      if (this.aimed) this.aim(this.aimed.node, this.aimed.zone);
-      this.dirty = true;
     });
     this.loop();
   }
 
-  private placeTitan() {
-    const m = this.models;
-    if (!m?.titan) return;
-    const titan = m.titan.clone(true);
-    // The anchor marks the globe's center in the titan's file; ours sits at the origin.
-    const s = R / m.radius;
-    titan.scale.setScalar(s);
-    titan.position.copy(m.anchor).multiplyScalar(-s);
-    titan.traverse((o) => {
-      if (o instanceof THREE.Mesh) {
-        o.material = (o.material as THREE.MeshStandardMaterial).clone();
-        (o.material as THREE.MeshStandardMaterial).flatShading = true;
-      }
-    });
-    this.stand.add(titan);
+  // What changes between paper and holo beyond colour: materials, the projector and bloom.
+  private applyStyle() {
+    const holo = this.tokens.holo;
+    this.surface.material = holo ? this.holoSurface : this.paperSurface;
+    const g = this.graticule.material as THREE.LineBasicMaterial;
+    g.blending = holo ? THREE.AdditiveBlending : THREE.NormalBlending;
+    g.depthWrite = !holo;
+    g.needsUpdate = true;
+    this.atmosphere.visible = holo;
+    this.projector.visible = holo;
+    if (holo) this.postFx();
+    // Pieces get lit edges under holo, so they are built again.
+    this.buildDevices();
   }
 
-  // The lowest point the titan's plinth reaches, for framing the overview.
-  private floor(): number {
-    if (!this.stand.children.length) return -1.3;
-    return new THREE.Box3().setFromObject(this.stand).min.y;
+  // Bloom, made the first time holo is on and kept after.
+  private postFx() {
+    if (this.post) return this.post;
+    const { w, h } = this.size;
+    const target = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, samples: 4 });
+    const composer = new EffectComposer(this.renderer, target);
+    composer.addPass(new RenderPass(this.scene, this.camera));
+    const bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.55, 0.4, 0.32);
+    composer.addPass(bloom);
+    composer.addPass(new OutputPass());
+    composer.setSize(w, h);
+    this.post = { composer, bloom };
+    return this.post;
   }
 
   setLens(lens: Lens, wires: RoutedWire[]) {
@@ -305,6 +324,8 @@ export class GlobeScene {
     const group = new THREE.Group();
     group.userData.id = e.id;
     const materials: THREE.MeshStandardMaterial[] = [];
+    const edges: THREE.LineBasicMaterial[] = [];
+    const holo = this.tokens.holo;
     const frame = place.shape === "frame";
     let stand: THREE.Group | undefined;
     let normal: THREE.Vector3 | undefined;
@@ -334,16 +355,28 @@ export class GlobeScene {
           const c = m instanceof THREE.MeshStandardMaterial ? m.clone() : new THREE.MeshStandardMaterial({ name: m.name || "body" });
           c.flatShading = true;
           c.userData.role = (m.name || "body").replace(/\.\d+$/, "");
+          // Faces step back a hair so the lit edges drawn on them always win the depth test.
+          c.polygonOffset = holo;
+          c.polygonOffsetFactor = 1;
+          c.polygonOffsetUnits = 1;
           materials.push(c);
           return c;
         });
         o.material = Array.isArray(o.material) ? mats : (mats[0] as THREE.MeshStandardMaterial);
+        if (holo) {
+          const mat = new THREE.LineBasicMaterial({ transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
+          const edge = new THREE.LineSegments(new THREE.EdgesGeometry(o.geometry, 28), mat);
+          // A line's pick threshold is a whole world unit; the mesh under it already picks.
+          edge.raycast = () => undefined;
+          o.add(edge);
+          edges.push(mat);
+        }
       });
     }
     const ring = new THREE.Mesh(outlineRing(p, place, R * 1.0025), new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false }));
     ring.visible = false;
     this.sheet.add(chip, group, ring);
-    return { id: e.id, kind: e.kind, group, materials, chip, ring, label: vec(p, place.x + place.w / 2, place.y + place.h + 4, R * 1.003), holder: stand, normal };
+    return { id: e.id, kind: e.kind, group, materials, edges, chip, ring, label: vec(p, place.x + place.w / 2, place.y + place.h + 4, R * 1.003), holder: stand, normal };
   }
 
   // A kit piece by kind, or a chamfered block when the kit lacks it or hasn't loaded.
@@ -379,8 +412,12 @@ export class GlobeScene {
   }
 
   setTokens(t: Tokens) {
+    const restyle = t.holo !== this.tokens.holo;
     this.tokens = t;
+    if (restyle) this.applyStyle();
     this.applyColors();
+    // Holo's overview takes in the projector, so it frames differently.
+    if (restyle && this.aimed && !this.aimed.node && !this.aimed.zone) this.aim(undefined, undefined);
   }
 
   setFocus(lit: Lit | null, node: string | undefined, zone: string | undefined) {
@@ -399,29 +436,38 @@ export class GlobeScene {
   private applyColors() {
     const t = this.tokens;
     const lit = this.lit;
+    const holo = t.holo;
     this.scene.background = t.bg;
-    (this.surface.material as THREE.MeshStandardMaterial).color.copy(t.paper).lerp(t.bg, t.dark ? 0.15 : 0.04);
-    (this.graticule.material as THREE.LineBasicMaterial).color.copy(t.rule);
-    for (const o of this.stand.children)
-      o.traverse((m) => {
-        if (!(m instanceof THREE.Mesh)) return;
-        const mat = m.material as THREE.MeshStandardMaterial;
-        const plinth = mat.name.startsWith("plinth");
-        // Pale stone in daylight, weathered bronze-gray at night.
-        const stone = t.dark ? t.paper.clone().lerp(t.muted, 0.42) : t.paper.clone().lerp(t.rule, 0.85);
-        mat.color.copy(plinth ? stone.clone().lerp(t.fg, t.dark ? 0.08 : 0.18) : stone);
-        mat.roughness = 0.9;
-        mat.metalness = 0;
-      });
+    this.paperSurface.color.copy(t.paper).lerp(t.bg, t.dark ? 0.15 : 0.04);
+    this.holoSurface.uniforms.core?.value.copy(t.paper).lerp(t.bg, 0.35);
+    this.holoSurface.uniforms.rim?.value.copy(t.accent).multiplyScalar(0.5);
+    this.atmosphere.material.uniforms.rim?.value.copy(t.accent);
+    this.projector.traverse((o) => {
+      if (!(o instanceof THREE.Mesh || o instanceof THREE.LineSegments)) return;
+      const m = o.material as THREE.MeshBasicMaterial | THREE.ShaderMaterial;
+      if (m instanceof THREE.ShaderMaterial) m.uniforms.color?.value.copy(t.accent);
+      else m.color.copy(t.accent);
+    });
+    const grid = this.graticule.material as THREE.LineBasicMaterial;
+    grid.color.copy(holo ? t.accent : t.rule);
+    grid.opacity = holo ? 0.16 : 0.9;
+    // Holo lights the pieces cool from above and cyan from behind, so their outlines read.
+    this.hemi.color.copy(holo ? t.fg : new THREE.Color(0xffffff));
+    this.hemi.groundColor.copy(holo ? t.bg : new THREE.Color(0x6f7d79));
+    this.hemi.intensity = holo ? 0.55 : 1.15;
+    this.key.intensity = holo ? 1.1 : 2.2;
+    this.rim.color.copy(holo ? t.accent : new THREE.Color(0xffffff));
+    this.rim.intensity = holo ? 2.4 : 0.9;
     for (const { mesh, outline, zone } of this.zones.values()) {
-      const tone = zone.tone === "room" ? t.rule : zone.tone === "host" ? t.net.tail : (t.tone[zone.tone] ?? t.rule);
+      const room = holo ? t.accent : t.rule;
+      const tone = zone.tone === "room" ? room : zone.tone === "host" ? t.net.tail : (t.tone[zone.tone] ?? room);
       const fill = mesh.material as THREE.MeshBasicMaterial;
       const active = this.zone === zone.id;
       fill.color.copy(zone.tone === "room" ? t.chip : tone);
       fill.opacity = (zone.tone === "room" ? 0.55 : 0.1) * (lit ? 0.6 : 1) + (active ? 0.15 : 0);
       const om = outline.material as LineMaterial;
       om.color.copy(active ? t.accent : tone);
-      om.opacity = lit ? 0.4 : 1;
+      om.opacity = (lit ? 0.4 : 1) * (holo && zone.tone === "room" && !active ? 0.5 : 1);
       om.linewidth = active ? 2.4 : 1.4;
     }
     for (const w of this.wires) {
@@ -444,10 +490,15 @@ export class GlobeScene {
         const role = m.userData.role as string;
         const base = this.roleColor(role, d.kind, led);
         m.color.copy(dim ? base.lerp(t.bg, 0.6) : base);
-        m.emissive.copy(role === "led" && !dim ? led : new THREE.Color(0));
-        m.emissiveIntensity = role === "led" ? 0.9 : 0;
+        const glow = role === "led" ? led : holo && role === "screen" ? t.accent : holo && role === "accent" ? toneOf(d.kind, t) : null;
+        m.emissive.copy(glow && !dim ? glow : new THREE.Color(0));
+        m.emissiveIntensity = role === "led" ? (holo ? 1.6 : 0.9) : holo ? (role === "screen" ? 0.12 : 0.25) : 0;
         m.roughness = role === "screen" ? 0.35 : 0.7;
         m.metalness = 0;
+      }
+      for (const m of d.edges) {
+        m.color.copy(sel ? t.accent : toneOf(d.kind, t));
+        m.opacity = dim ? 0.12 : sel ? 1 : 0.7;
       }
     }
     this.dirty = true;
@@ -456,6 +507,13 @@ export class GlobeScene {
   // What each material role in the kit becomes under the current theme.
   private roleColor(role: string, kind: Kind, led: THREE.Color): THREE.Color {
     const t = this.tokens;
+    // Holo pieces are dark glass; their edges and lights carry the colour.
+    if (t.holo) {
+      if (role === "led") return led.clone();
+      if (role === "accent") return toneOf(kind, t).clone().lerp(t.bg, 0.55);
+      if (role === "screen") return t.accent.clone().lerp(t.bg, 0.75);
+      return t.paper.clone().lerp(t.accent, role === "trim" ? 0.12 : 0.05);
+    }
     if (role === "trim") return t.fg.clone().lerp(t.paper, t.dark ? 0.55 : 0.35);
     if (role === "accent") return toneOf(kind, t).clone();
     if (role === "screen") return t.fg.clone().lerp(t.bg, t.dark ? 0.85 : 0.1);
@@ -495,10 +553,11 @@ export class GlobeScene {
     this.camera.setViewOffset(this.size.w, this.size.h, 0, inset / 2, this.size.w, this.size.h);
     this.camera.updateProjectionMatrix();
     for (const m of this.lineMaterials) m.resolution.set(this.size.w, this.size.h);
+    this.post?.composer.setSize(this.size.w, this.size.h);
     this.dirty = true;
   }
 
-  // The shot that frames the whole statue, a room, or one box.
+  // The shot that frames the whole globe, a room, or one box.
   shotFor(node: string | undefined, zone: string | undefined): Shot {
     const lens = this.lens;
     const p = this.proj;
@@ -512,10 +571,11 @@ export class GlobeScene {
     if (p && z) {
       return { ...facing(p, z.x + z.w / 2, z.y + z.h / 2), dist: R + fitDist(z.w * p.scale * 0.6, z.h * p.scale * 0.6), lookY: 0 };
     }
-    const floor = this.floor();
-    const top = 1.08;
-    const lookY = (top + floor) / 2;
-    return { yaw: 0, pitch: lens && p ? facing(p, lens.width / 2, lens.height / 2).pitch + 0.12 : 0.12, dist: fitDist(1.5, (top - floor) / 2 + 0.38), lookY: lookY - 0.2 };
+    // Holo stands the globe on its projector, so the overview takes that in too. Its rings
+    // reach toward the camera, which drops their front edge lower than BASE_Y on screen.
+    const top = 1.1;
+    const bottom = this.tokens.holo ? BASE_Y - 0.45 : -1.1;
+    return { yaw: 0, pitch: lens && p ? facing(p, lens.width / 2, lens.height / 2).pitch + 0.12 : 0.12, dist: fitDist(this.tokens.holo ? 1.35 : 1.25, (top - bottom) / 2 + 0.18), lookY: (top + bottom) / 2 };
   }
 
   private flight: { from: Shot; to: Shot; start: number; dur: number } | null = null;
@@ -528,6 +588,7 @@ export class GlobeScene {
   }
 
   flyTo(to: Shot, instant = this.reduced) {
+    this.poke();
     const from = { ...this.shot };
     // The short way round.
     const dy = Math.atan2(Math.sin(to.yaw - from.yaw), Math.cos(to.yaw - from.yaw));
@@ -541,8 +602,20 @@ export class GlobeScene {
     this.flight = { from, to: target, start: performance.now(), dur: 900 };
   }
 
-  // A drag turns the globe; the titan stays put.
+  // Anything the viewer does holds off the idle spin for a while.
+  poke() {
+    this.idleSince = performance.now();
+  }
+
+  // Holds the idle spin for as long as the reason lasts.
+  hold(why: string, on: boolean) {
+    if (on) this.holds.add(why);
+    else this.holds.delete(why);
+    this.poke();
+  }
+
   turn(dx: number, dy: number) {
+    this.poke();
     this.flight = null;
     const k = 0.0042 * Math.min(1, (this.shot.dist - R) / 3);
     this.shot.yaw += dx * k;
@@ -551,10 +624,11 @@ export class GlobeScene {
   }
 
   zoom(factor: number) {
+    this.poke();
     this.flight = null;
     const span = (this.shot.dist - R) * factor;
     this.shot.dist = R + THREE.MathUtils.clamp(span, 0.6, 9);
-    // Zoomed in, look at the globe; out, at the whole statue.
+    // Zoomed in, look at the globe's center; out, at the overview's.
     const out = this.shotFor(undefined, undefined);
     const t = THREE.MathUtils.clamp((this.shot.dist - 2.4) / Math.max(out.dist - 2.4, 0.1), 0, 1);
     this.shot.lookY = out.lookY * t;
@@ -594,6 +668,14 @@ export class GlobeScene {
   private loop = () => {
     if (this.disposed) return;
     this.frame = requestAnimationFrame(this.loop);
+    const now = performance.now();
+    const dt = Math.min(0.05, (now - this.lastFrame) / 1000);
+    this.lastFrame = now;
+    // Holo's overview turns slowly by itself, like a projection left running.
+    if (this.tokens.holo && !this.reduced && !this.flight && !this.aimed?.node && !this.aimed?.zone && !this.holds.size && now - this.idleSince > IDLE) {
+      this.shot.yaw += dt * SPIN;
+      this.dirty = true;
+    }
     if (this.flight) {
       const f = this.flight;
       const k = Math.min(1, (performance.now() - f.start) / f.dur);
@@ -631,7 +713,10 @@ export class GlobeScene {
     this.camera.position.set(0, s.lookY + s.dist * 0.1, s.dist);
     this.camera.lookAt(0, s.lookY, 0);
     this.standPieces();
-    this.renderer.render(this.scene, this.camera);
+    // The projector's tick ring follows the globe round, slower.
+    this.projector.rotation.y = s.yaw * 0.25;
+    if (this.tokens.holo) this.postFx().composer.render();
+    else this.renderer.render(this.scene, this.camera);
     this.onFrame?.();
   };
 
@@ -666,6 +751,9 @@ export class GlobeScene {
     cancelAnimationFrame(this.frame);
     this.clearSheet();
     disposeTree(this.scene);
+    this.paperSurface.dispose();
+    this.holoSurface.dispose();
+    this.post?.composer.dispose();
     this.renderer.dispose();
   }
 }
@@ -734,6 +822,119 @@ function graticuleGeometry(): THREE.BufferGeometry {
     }
   const g = new THREE.BufferGeometry();
   g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  return g;
+}
+
+const rimVertex = /* glsl */ `
+  varying vec3 vNormal;
+  varying vec3 vView;
+  void main() {
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    vNormal = normalMatrix * normal;
+    vView = -mv.xyz;
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+
+// The holo globe: dark where it faces you, brightening to the rim colour where it turns away.
+function rimMaterial(): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: { core: { value: new THREE.Color() }, rim: { value: new THREE.Color() }, power: { value: 3.2 } },
+    vertexShader: rimVertex,
+    fragmentShader: /* glsl */ `
+      uniform vec3 core;
+      uniform vec3 rim;
+      uniform float power;
+      varying vec3 vNormal;
+      varying vec3 vView;
+      void main() {
+        float f = pow(1.0 - max(dot(normalize(vNormal), normalize(vView)), 0.0), power);
+        gl_FragColor = vec4(mix(core, rim, f), 1.0);
+        #include <colorspace_fragment>
+      }
+    `,
+  });
+}
+
+// A glow just outside the globe, drawn on the back of a larger shell. inner is how far the
+// shell's back faces turn from the viewer where they meet the globe's outline.
+function haloMaterial(ratio: number): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: { rim: { value: new THREE.Color() }, inner: { value: Math.sqrt(1 - ratio * ratio) } },
+    vertexShader: rimVertex,
+    fragmentShader: /* glsl */ `
+      uniform vec3 rim;
+      uniform float inner;
+      varying vec3 vNormal;
+      varying vec3 vView;
+      void main() {
+        float k = -dot(normalize(vNormal), normalize(vView));
+        float g = pow(clamp(k / inner, 0.0, 1.0), 4.0) * 0.28;
+        gl_FragColor = vec4(rim, g);
+      }
+    `,
+    side: THREE.BackSide,
+    blending: THREE.AdditiveBlending,
+    transparent: true,
+    depthWrite: false,
+  });
+}
+
+// The holo globe's stand: rings of light on the floor, a tick ring that turns, and a faint
+// beam rising to the globe. Coloured from the accent in applyColors.
+function projectorBase(): THREE.Group {
+  const g = new THREE.Group();
+  const glow = (opacity: number) => new THREE.MeshBasicMaterial({ transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+  for (const [inner, outer, opacity] of [
+    [0.5, 0.515, 0.55],
+    [0.74, 0.748, 0.3],
+    [0.98, 0.985, 0.22],
+  ] as const) {
+    const ring = new THREE.Mesh(new THREE.RingGeometry(inner, outer, 128), glow(opacity));
+    ring.rotation.x = -Math.PI / 2;
+    g.add(ring);
+  }
+  const disc = new THREE.Mesh(new THREE.CircleGeometry(0.5, 96), glow(0.025));
+  disc.rotation.x = -Math.PI / 2;
+  g.add(disc);
+  const ticks: number[] = [];
+  for (let i = 0; i < 120; i++) {
+    const a = (i / 120) * Math.PI * 2;
+    const long = i % 10 === 0;
+    const [r0, r1] = [1.06, long ? 1.16 : 1.1];
+    ticks.push(Math.cos(a) * r0, 0, Math.sin(a) * r0, Math.cos(a) * r1, 0, Math.sin(a) * r1);
+  }
+  const tickGeo = new THREE.BufferGeometry();
+  tickGeo.setAttribute("position", new THREE.Float32BufferAttribute(ticks, 3));
+  g.add(new THREE.LineSegments(tickGeo, new THREE.LineBasicMaterial({ transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false })));
+  // The beam fades as it rises, from the inner ring up to where the globe is as wide.
+  const height = -0.35 - BASE_Y;
+  const beam = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.93, 0.5, height, 96, 1, true),
+    new THREE.ShaderMaterial({
+      uniforms: { color: { value: new THREE.Color() } },
+      vertexShader: /* glsl */ `
+        varying float vUp;
+        void main() {
+          vUp = uv.y;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform vec3 color;
+        varying float vUp;
+        void main() {
+          gl_FragColor = vec4(color, pow(1.0 - vUp, 2.2) * 0.07);
+        }
+      `,
+      side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending,
+      transparent: true,
+      depthWrite: false,
+    }),
+  );
+  beam.position.y = height / 2;
+  g.add(beam);
   return g;
 }
 

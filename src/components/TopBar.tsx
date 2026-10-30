@@ -3,17 +3,7 @@ import { useEffect, useState } from "react";
 import { site } from "@/data/site";
 import type { Lens } from "@/data/types";
 import { useLive } from "@/live/prom";
-
-type Theme = "auto" | "light" | "dark";
-
-function readTheme(): Theme {
-  try {
-    const t = localStorage.getItem("atlas-theme");
-    return t === "light" || t === "dark" ? t : "auto";
-  } catch {
-    return "auto";
-  }
-}
+import { applyTheme, readTheme, themes, type Theme } from "@/lib/theme";
 
 function LivePill() {
   const live = useLive();
@@ -44,17 +34,7 @@ interface Props {
 
 export function TopBar({ lenses, current, onLens, onSearch }: Props) {
   const [theme, setTheme] = useState<Theme>(readTheme);
-  useEffect(() => {
-    const root = document.documentElement;
-    if (theme === "auto") root.removeAttribute("data-theme");
-    else root.setAttribute("data-theme", theme);
-    try {
-      localStorage.setItem("atlas-theme", theme);
-    } catch {
-      // Private windows can refuse storage; the theme then lasts for this visit only.
-    }
-  }, [theme]);
-  const next: Record<Theme, Theme> = { auto: "dark", dark: "light", light: "auto" };
+  useEffect(() => applyTheme(theme), [theme]);
   return (
     <header className="topbar">
       <div className="brand">
@@ -80,9 +60,16 @@ export function TopBar({ lenses, current, onLens, onSearch }: Props) {
           <span className="txt">Find</span>
           <kbd>/</kbd>
         </button>
-        <button type="button" className="iconbtn" onClick={() => setTheme(next[theme])} aria-label={`Theme: ${theme}`} title={`Theme: ${theme}`}>
-          {theme === "dark" ? "☾" : theme === "light" ? "☀" : "◐"}
-        </button>
+        <label className="iconbtn theme-pick" title="Theme">
+          <span aria-hidden>◐</span>
+          <select value={theme} onChange={(e) => setTheme(e.target.value as Theme)} aria-label="Theme">
+            {themes.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.label}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
     </header>
   );
