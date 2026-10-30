@@ -1,0 +1,4 @@
+[
+  { "name": "dev", "cmd": "bun run dev --port 7872", "dev": true },
+  { "name": "check", "cmd": "bun run check" }
+]
