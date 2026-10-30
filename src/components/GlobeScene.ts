@@ -66,6 +66,8 @@ export function canDrawGlobe(): boolean {
   }
 }
 
+export type LabelKind = "node" | "zone" | "wire";
+
 export type Pick = { kind: "node"; id: string } | { kind: "zone"; id: string } | null;
 export type Led = "up" | "down" | "asleep" | "off" | "none";
 
@@ -155,6 +157,7 @@ export class GlobeScene {
   private devices = new Map<string, Device>();
   private zones = new Map<string, { mesh: THREE.Mesh; outline: Line2; zone: Zone; label: THREE.Vector3 }>();
   private wires: WireLine[] = [];
+  private wireLabels = new Map<string, THREE.Vector3>();
   private packets: { mesh: THREE.Mesh; wire: WireLine; offset: number }[] = [];
   private lineMaterials: LineMaterial[] = [];
   private tokens: Tokens;
@@ -245,7 +248,8 @@ export class GlobeScene {
       this.zones.set(z.id, { mesh, outline, zone: z, label: vec(p, lx, ly, R * 1.003) });
     }
     for (const w of wires) {
-      const pts = samplePath(w.path, 6).map(([x, y]) => vec(p, x, y, R * LIFT));
+      const flat = samplePath(w.path, 6);
+      const pts = flat.map(([x, y]) => vec(p, x, y, R * LIFT));
       if (pts.length < 2) continue;
       const line = this.line(pts, w.net === "sto" || w.net === "tail" ? 3 : 2.2, w.dashed || w.net === "air");
       const lengths = [0];
@@ -253,6 +257,9 @@ export class GlobeScene {
       line.userData.wire = w.id;
       this.sheet.add(line);
       this.wires.push({ id: w.id, net: w.net, line, points: pts, lengths });
+      // A hand-drawn path without labelAt has no midpoint of its own, so take the path's.
+      const [mx, my] = w.labelAt ?? (w.d ? (flat[Math.floor(flat.length / 2)] ?? w.mid) : w.mid);
+      if (w.label) this.wireLabels.set(w.id, vec(p, mx, my, R * 1.003));
     }
     this.buildDevices();
     this.applyColors();
@@ -363,6 +370,7 @@ export class GlobeScene {
     for (const pk of this.packets) disposeTree(pk.mesh);
     this.devices.clear();
     this.zones.clear();
+    this.wireLabels.clear();
     this.wires = [];
     this.packets = [];
     this.lineMaterials = [];
@@ -567,8 +575,8 @@ export class GlobeScene {
   }
 
   // Screen position of a label and how squarely it faces the camera, 1 head-on, below 0 behind.
-  labelAt(kind: "node" | "zone", id: string): { x: number; y: number; facing: number } | null {
-    const v = kind === "node" ? this.devices.get(id)?.label : this.zones.get(id)?.label;
+  labelAt(kind: LabelKind, id: string): { x: number; y: number; facing: number } | null {
+    const v = kind === "node" ? this.devices.get(id)?.label : kind === "zone" ? this.zones.get(id)?.label : this.wireLabels.get(id);
     if (!v) return null;
     const world = v.clone().applyQuaternion(this.globe.quaternion);
     const toCam = this.camera.position.clone().sub(world).normalize();

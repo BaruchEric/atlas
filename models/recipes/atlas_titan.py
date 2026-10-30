@@ -23,7 +23,7 @@ REVIEW = "--review" in ARGS
 PLINTH_TOP = 0.22
 TITAN_TRIS = 2600  # few enough for facets that read at app scale; flat shading splits vertices per face, so this keeps the GLB small
 META_RES = 0.014
-FIGURE_SCALE = 1.12  # as large as the 2.0-2.4 globe height allows
+FIGURE_SCALE = 1.45  # big enough that the figure reads as carrying the globe, not crouched under it
 K = 1.0 / 0.574  # metaball radius whose lone surface has radius 1 (threshold 0.6, stiffness 2)
 
 
@@ -95,7 +95,7 @@ def arm_parts(center, s):
         ("ell", S((s * 0.45, -0.10, 1.21)), (0.115 * f, 0.08 * f, 0.08 * f)),  # bicep
         ("cap", elbow, wrist, 0.065 * f),
         ("ball", S((s * 0.64, -0.16, 1.33)), 0.08 * f),  # forearm mass
-        ("mitt", on_globe(hand_dir, 0.035), hand_dir, (0.09, 0.075, 0.035)),  # hand flat on the globe
+        ("mitt", on_globe(hand_dir, 0.035), hand_dir, (0.09 * f, 0.075 * f, 0.035)),  # hand flat on the globe
     ]
 
 

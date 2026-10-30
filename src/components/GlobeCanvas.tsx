@@ -1,10 +1,11 @@
 import { useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from "react";
 import type { CanvasHandle } from "@/components/MapCanvas";
-import { canDrawGlobe, GlobeScene, readTokens, type Led } from "@/components/GlobeScene";
+import { canDrawGlobe, GlobeScene, readTokens, type LabelKind, type Led } from "@/components/GlobeScene";
 import { entities } from "@/data/site";
 import type { Lens, Net } from "@/data/types";
 import type { Target } from "@/lib/actions";
 import { lightUp, routeLens } from "@/lib/geometry";
+import { unclutter, type LabelBox } from "@/lib/globe";
 import { liveFor, useLive } from "@/live/prom";
 
 interface Props {
@@ -28,7 +29,10 @@ export function GlobeCanvas({ lens, zone, node, cover, reduced, onSelect, onZone
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const sceneRef = useRef<GlobeScene | null>(null);
-  const labels = useRef(new Map<string, { kind: "node" | "zone"; id: string; el: HTMLElement }>());
+  // w and h are measured once, since reading them every frame would force a layout.
+  const labels = useRef(new Map<string, { kind: LabelKind; id: string; el: HTMLElement; w?: number; h?: number }>());
+  // What the label pass ranks first, read from inside the scene's frame callback.
+  const ranked = useRef<{ node?: string; hover: string | null }>({ hover: null });
   const [failed] = useState(() => !canDrawGlobe());
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [hover, setHover] = useState<string | null>(null);
@@ -47,11 +51,31 @@ export function GlobeCanvas({ lens, zone, node, cover, reduced, onSelect, onZone
     const scene = new GlobeScene(canvas, reduced);
     sceneRef.current = scene;
     scene.onFrame = () => {
-      for (const { kind, id, el } of labels.current.values()) {
+      const boxes: LabelBox[] = [];
+      const fade = new Map<string, number>();
+      const { node: sel, hover: over } = ranked.current;
+      for (const [key, label] of labels.current) {
+        const { kind, id, el } = label;
         const at = scene.labelAt(kind, id);
         if (!at) continue;
         const show = Math.max(0, Math.min(1, (at.facing - 0.15) / 0.25));
         el.style.transform = `translate(${at.x.toFixed(1)}px, ${at.y.toFixed(1)}px)`;
+        fade.set(key, show);
+        if (show < 0.05) continue;
+        // Node names hang centered below their point, wire labels sit centered on it,
+        // room names start at it.
+        label.w ??= el.offsetWidth;
+        label.h ??= el.offsetHeight;
+        const { w, h } = label;
+        const x = kind === "zone" ? at.x : at.x - w / 2;
+        const y = kind === "wire" ? at.y - h / 2 : at.y;
+        const first = id === sel || el === document.activeElement ? 10 : id === over ? 8 : 0;
+        const priority = first + (kind === "zone" ? 3 : kind === "node" ? 2 : 0) + at.facing;
+        boxes.push({ key, x, y, w, h, priority });
+      }
+      const shown = unclutter(boxes);
+      for (const [key, { el }] of labels.current) {
+        const show = shown.has(key) ? (fade.get(key) ?? 0) : 0;
         el.style.opacity = show.toFixed(2);
         el.dataset.off = show < 0.05 ? "1" : "";
       }
@@ -111,6 +135,8 @@ export function GlobeCanvas({ lens, zone, node, cover, reduced, onSelect, onZone
   }, []);
 
   useEffect(() => {
+    // Fonts may have swapped in since the names were measured.
+    for (const label of labels.current.values()) label.w = label.h = undefined;
     sceneRef.current?.resize(size.w, size.h, insetBottom);
   }, [size, insetBottom]);
 
@@ -237,7 +263,7 @@ export function GlobeCanvas({ lens, zone, node, cover, reduced, onSelect, onZone
     onMenu(targetAtPoint(x, y), x, y);
   };
 
-  const keep = (kind: "node" | "zone", id: string) => (el: HTMLElement | null) => {
+  const keep = (kind: LabelKind, id: string) => (el: HTMLElement | null) => {
     if (el) labels.current.set(`${kind}:${id}`, { kind, id, el });
     else labels.current.delete(`${kind}:${id}`);
   };
@@ -253,6 +279,10 @@ export function GlobeCanvas({ lens, zone, node, cover, reduced, onSelect, onZone
 
   const nets = [...new Set(wires.map((w) => w.net))];
   const hovered = hover && !hover.startsWith("zone:") ? hover : null;
+  useEffect(() => {
+    ranked.current = { node, hover: hovered };
+    sceneRef.current?.invalidate();
+  }, [node, hovered]);
 
   return (
     <div
@@ -300,6 +330,13 @@ export function GlobeCanvas({ lens, zone, node, cover, reduced, onSelect, onZone
             </button>
           );
         })}
+        {wires
+          .filter((w) => w.label)
+          .map((w) => (
+            <span key={w.id} ref={keep("wire", w.id)} className={`globe-wire-label ${w.net}${lit && !lit.wires.has(w.id) ? " dim" : ""}`} aria-hidden>
+              {w.label}
+            </span>
+          ))}
       </div>
       <div className="overlay legend" aria-label="Line legend">
         {nets.map((n) => (

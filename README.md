@@ -26,7 +26,7 @@ Right-click (long-press on a phone, Shift-F10 on a focused box) opens a menu bui
 
 ## The globe
 
-The last sheet is the house on a globe, held up by a kneeling titan. It wraps one flat sheet onto the sphere: rooms become curved patches, boxes become small device pieces standing on them, and cables run along the surface. Drag to turn the globe, scroll or pinch to zoom. Picking a box turns it round to the front and lights its route, as on the flat sheet, and the names over the globe are buttons, so Tab walks them and brings a name on the far side round.
+The last sheet is the house on a globe, held up by a kneeling titan. It wraps one flat sheet onto the sphere: rooms become curved patches, boxes become small device pieces standing on them, and cables run along the surface. Drag to turn the globe, scroll or pinch to zoom. Picking a box turns it round to the front and lights its route, as on the flat sheet, and the names over the globe are buttons, so Tab walks them and brings a name on the far side round. Cable labels sit on their cables. Where names would overlap, the selected box wins, then rooms, then whatever faces you most; the rest fade until you turn or zoom.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/globe-dark.png">

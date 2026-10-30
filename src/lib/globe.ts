@@ -124,3 +124,24 @@ export function samplePath(d: string, step = 8): [number, number][] {
 export function facing(p: Projection, x: number, y: number): { yaw: number; pitch: number } {
   return { yaw: -p.lon(x), pitch: p.lat(y) };
 }
+
+export interface LabelBox {
+  key: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  // Higher wins a collision: the selected box, then rooms, then whatever faces the camera most.
+  priority: number;
+}
+
+// The labels that can show without overlapping one that matters more. Greedy, highest
+// priority first, which is plenty for the few dozen names a sheet carries.
+export function unclutter(boxes: LabelBox[], gap = 2): Set<string> {
+  const kept: LabelBox[] = [];
+  for (const b of [...boxes].sort((a, c) => c.priority - a.priority)) {
+    const hit = kept.some((k) => b.x < k.x + k.w + gap && k.x < b.x + b.w + gap && b.y < k.y + k.h + gap && k.y < b.y + b.h + gap);
+    if (!hit) kept.push(b);
+  }
+  return new Set(kept.map((k) => k.key));
+}

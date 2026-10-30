@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { lenses as all, site } from "@/data/site";
 import type { Lens } from "@/data/types";
-import { facing, globeLens, globeSource, projection, samplePath, unit } from "@/lib/globe";
+import { facing, globeLens, globeSource, projection, samplePath, unclutter, unit } from "@/lib/globe";
 
 const flat = site.lenses;
 const sheet = (id: string, extra: Partial<Lens> = {}): Lens => ({ id, key: "1", title: id, short: id, blurb: "", width: 1000, height: 500, zones: [], places: {}, wires: [], notes: [], ...extra });
@@ -59,5 +59,14 @@ describe("the globe sheet", () => {
     expect(curve[curve.length - 1]?.[0]).toBeCloseTo(100);
     expect(curve[curve.length - 1]?.[1]).toBeCloseTo(100);
     expect(curve.length).toBeGreaterThan(10);
+  });
+
+  test("an overlapping name gives way to one that matters more", () => {
+    const shown = unclutter([
+      { key: "far", x: 0, y: 0, w: 50, h: 14, priority: 1 },
+      { key: "selected", x: 30, y: 4, w: 50, h: 14, priority: 12 },
+      { key: "clear", x: 200, y: 0, w: 50, h: 14, priority: 0 },
+    ]);
+    expect([...shown].sort()).toEqual(["clear", "selected"]);
   });
 });
