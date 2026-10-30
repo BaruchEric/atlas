@@ -1,0 +1,5 @@
+node_modules
+dist
+*.tsbuildinfo
+# A real site: a folder or symlink with index.ts. Never committed here.
+site
