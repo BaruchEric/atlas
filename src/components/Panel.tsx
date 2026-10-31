@@ -157,7 +157,7 @@ function NodeDetail({ e, lens, onSelect, onLens }: Nav & { e: Entity }) {
   const hops = lens.origin && lens.origin !== e.id ? routeFrom(routed, lens.origin, e.id) : [];
   const here = lens.places[e.id];
   const inside = here?.shape === "frame" ? Object.entries(lens.places).filter(([id, p]) => id !== e.id && p.x >= here.x && p.y >= here.y && p.x + p.w <= here.x + here.w && p.y + p.h <= here.y + here.h) : [];
-  const elsewhere = lenses.filter((x) => x.id !== lens.id && x.places[e.id]);
+  const elsewhere = lenses.filter((x) => x.id !== lens.id && x.view !== "globe" && x.places[e.id]);
   const facts = [
     { k: "IP", v: e.ip, mono: true },
     { k: "MAC", v: e.mac, mono: true },

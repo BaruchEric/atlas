@@ -7,7 +7,7 @@ import { Search } from "@/components/Search";
 import { TopBar } from "@/components/TopBar";
 import { entities, lensById, lenses } from "@/data/site";
 import type { Command, Target } from "@/lib/actions";
-import { formatHash, parseHash, type View } from "@/lib/hashState";
+import { formatHash, parseHash, settle, up, type View } from "@/lib/hashState";
 import { useMedia } from "@/lib/useMedia";
 import { roam, roamSpots } from "@/lib/roam";
 import { useOrbiFeed } from "@/live/orbi";
@@ -20,7 +20,9 @@ export function App() {
   const prom = useLiveFeed();
   const orbi = useOrbiFeed();
   const live = useMemo(() => ({ ...prom, orbi }), [prom, orbi]);
-  const [view, setView] = useState<View>(() => parseHash(location.hash));
+  // The view, and the one before it, which tells the globe sheet which way it is travelling.
+  const [nav, setNav] = useState<{ view: View; from?: View }>(() => ({ view: parseHash(location.hash) }));
+  const view = nav.view;
   const [searching, setSearching] = useState(false);
   const [menu, setMenu] = useState<MenuAt | null>(null);
   const [toast, setToast] = useState<{ text: string; n: number } | null>(null);
@@ -36,33 +38,36 @@ export function App() {
   const go = useCallback((v: View) => {
     const h = formatHash(v);
     if (h !== location.hash) history.pushState(null, "", h);
-    setView(v);
+    setNav((n) => ({ view: settle(v), from: n.view }));
   }, []);
 
   useEffect(() => {
-    const onPop = () => setView(parseHash(location.hash));
+    const onPop = () => setNav((n) => ({ view: parseHash(location.hash), from: n.view }));
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
 
   const select = useCallback(
     (id: string | null) => {
-      if (!id) return go({ lens: view.lens, zone: view.zone });
+      if (!id) return go({ lens: view.lens, home: view.home, zone: view.zone });
       setPeek(false);
       if (lensById[view.lens]?.places[id]) return go({ lens: view.lens, zone: view.zone, node: id });
       const home = lenses.find((l) => l.places[id]);
       go({ lens: home?.id ?? view.lens, node: id });
     },
-    [go, view.lens, view.zone],
+    [go, view.lens, view.home, view.zone],
   );
 
   const toLens = useCallback((id: string, node?: string) => go({ lens: id, node }), [go]);
+  // The globe sheet's dive onto home has landed: draw the house.
+  const toHome = useCallback(() => go({ lens: view.lens, home: true }), [go, view.lens]);
+  const stage = useRef<HTMLDivElement>(null);
   const toZone = useCallback(
     (id: string | null) => {
       if (id) setPeek(false);
-      go({ lens: view.lens, zone: id ?? undefined });
+      go({ lens: view.lens, home: view.home, zone: id ?? undefined });
     },
-    [go, view.lens],
+    [go, view.lens, view.home],
   );
 
   const openMenu = useCallback((target: Target, x: number, y: number) => setMenu({ target, x, y }), []);
@@ -81,11 +86,28 @@ export function App() {
       if (c === "fit") canvas.current?.fit();
       else if (c === "zoom") canvas.current?.zoomAt(x, y);
       else if (c === "search") setSearching(true);
-      else if (view.node) go({ lens: view.lens, zone: view.zone });
-      else if (view.zone) go({ lens: view.lens });
+      else if (view.node || view.zone || view.home) go(up(view));
     },
     [go, view],
   );
+
+  // Into the house from Earth, the flat sheet grows out of the roof the dive landed on. A
+  // scroll that drilled in can still be coasting, so the house ignores the wheel while it grows.
+  const fromEarth = base?.view === "globe" && !!view.home && nav.from?.lens === base.id && !nav.from.home;
+  useEffect(() => {
+    const el = stage.current;
+    if (!fromEarth || !el) return;
+    const swallow = (e: WheelEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    el.addEventListener("wheel", swallow, { capture: true, passive: false });
+    const done = setTimeout(() => el.removeEventListener("wheel", swallow, { capture: true }), 700);
+    return () => {
+      clearTimeout(done);
+      el.removeEventListener("wheel", swallow, { capture: true });
+    };
+  }, [fromEarth]);
 
   useEffect(() => {
     if (!toast) return;
@@ -108,8 +130,7 @@ export function App() {
       if (l) return toLens(l.id);
       if (e.key === "Escape") {
         if (searching) return setSearching(false);
-        if (view.node) return go({ lens: view.lens, zone: view.zone });
-        if (view.zone) return go({ lens: view.lens });
+        if (view.node || view.zone || view.home) return go(up(view));
         setPeek(true);
       }
     };
@@ -120,16 +141,18 @@ export function App() {
   if (!lens) return null;
   const zoneLabel = view.zone ? lens.zones.find((z) => z.id === view.zone)?.label : undefined;
   const nodeLabel = view.node ? entities[view.node]?.label : undefined;
+  const globe = lens.view === "globe";
+  const cameFrom = nav.from?.lens === lens.id ? nav.from : undefined;
 
   return (
     <LiveContext.Provider value={live}>
       <div className="app">
         <TopBar lenses={lenses} current={lens.id} onLens={(id) => toLens(id)} onSearch={() => setSearching(true)} />
         <div className="main">
-          <div style={{ position: "relative", minWidth: 0, minHeight: 0, display: "grid" }}>
-            {lens.view === "globe" ? (
+          <div ref={stage} className={fromEarth ? "arrive-in" : undefined} style={{ position: "relative", minWidth: 0, minHeight: 0, display: "grid" }}>
+            {globe && !view.home ? (
               <Suspense fallback={<div className="stage" />}>
-                <GlobeCanvas ref={canvas} lens={lens} zone={view.zone} node={view.node} cover={sheet ? (peek ? "peek" : "open") : "none"} reduced={reduced} onSelect={select} onZone={toZone} onMenu={openMenu} />
+                <GlobeCanvas ref={canvas} lens={lens} cover={sheet ? (peek ? "peek" : "open") : "none"} reduced={reduced} arrive={cameFrom?.home ? "close" : "far"} onEnter={toHome} onMenu={openMenu} />
               </Suspense>
             ) : (
               <MapCanvas ref={canvas} lens={lens} zone={view.zone} node={view.node} cover={sheet ? (peek ? "peek" : "open") : "none"} reduced={reduced} onSelect={select} onZone={toZone} onMenu={openMenu} />
@@ -139,10 +162,18 @@ export function App() {
                 <span className="no">{lens.key}</span>
                 {lens.short}
               </button>
+              {view.home && (
+                <>
+                  <span className="crumb-sep">›</span>
+                  <button type="button" className="crumb" onClick={() => go({ lens: lens.id, home: true })}>
+                    Home
+                  </button>
+                </>
+              )}
               {zoneLabel && (
                 <>
                   <span className="crumb-sep">›</span>
-                  <button type="button" className="crumb" onClick={() => go({ lens: lens.id, zone: view.zone })}>
+                  <button type="button" className="crumb" onClick={() => go({ lens: lens.id, home: view.home, zone: view.zone })}>
                     {zoneLabel}
                   </button>
                 </>
@@ -156,7 +187,9 @@ export function App() {
                 </>
               )}
             </nav>
-            {!view.node && !view.zone && <div className="hint">{lens.view === "globe" ? "Drag to turn the globe" : "Click a box or a room to drill in"} · right-click for actions · 1–{lenses.length} switch sheets · / to find · Esc to back out</div>}
+            {!view.node && !view.zone && (
+              <div className="hint">{globe && !view.home ? "Drag to turn Earth · pick Home to go inside" : "Click a box or a room to drill in · right-click for actions"} · 1–{lenses.length} switch sheets · / to find{view.home || !globe ? " · Esc to back out" : ""}</div>
+            )}
           </div>
           <Panel lens={lens} zone={view.zone} node={view.node} sheet={sheet} peek={peek} onTogglePeek={() => setPeek((p) => !p)} onSelect={select} onZone={toZone} onLens={toLens} onMenu={openMenu} />
         </div>

@@ -13,6 +13,8 @@ export const site: Site = {
   lenses,
   network,
   lan: "192.168.50.",
+  // Where the globe sheet plants the house. A made-up house, so any city will do.
+  globe: { home: { lat: 38.72, lon: -9.14, label: "Lisbon" } },
   addressesLede: "Read from example/network.md. Infrastructure gets a reservation below the DHCP pool.",
   foot: "Addresses, measurements, decisions and open work come from example/network.md at build time. Live dots need a Prometheus; see the README.",
   prometheus: "http://100.64.0.2:9090",

@@ -126,6 +126,9 @@ export function MapCanvas({ lens, zone, node, cover, reduced, onSelect, onZone, 
 
   const zoomBy = useCallback(
     (f: number, cx = size.w / 2, cy = size.h / 2) => {
+      // Before the first measure there is nothing to zoom about. A wheel that carries on from
+      // the globe's dive lands here first, and dividing by a zero size would leave the view NaN.
+      if (!size.w || !size.h) return;
       flight.current?.stop();
       const v = view.current;
       const w = Math.min(Math.max(v.w * f, lens.width * 0.1), lens.width * 4);

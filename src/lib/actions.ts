@@ -115,12 +115,13 @@ function nodeMenu(e: Entity, { lens, view, live, base }: MenuContext): Menu {
     const origin = lens.origin && lens.origin !== e.id ? entities[lens.origin] : undefined;
     nav.push(
       view.node === e.id
-        ? { do: "go", label: "Clear selection", hint: "Esc", view: { lens: lens.id, zone: view.zone } }
+        ? { do: "go", label: "Clear selection", hint: "Esc", view: { lens: lens.id, home: view.home, zone: view.zone } }
         : { do: "go", label: origin ? `Trace from ${origin.label}` : "Show details", view: { lens: lens.id, zone: view.zone, node: e.id } },
     );
   }
   for (const other of lenses) {
-    if (other.id === lens.id || !other.places[e.id]) continue;
+    // The globe sheet's house is its source sheet again, so it isn't another place to look.
+    if (other.id === lens.id || other.view === "globe" || !other.places[e.id]) continue;
     nav.push({ do: "go", label: other.origin ? `Trace on ${other.short}` : `Show on ${other.short}`, hint: other.key, view: { lens: other.id, node: e.id } });
   }
   if (host) nav.push({ do: "go", label: `Go to ${host.label}`, view: { lens: lens.id, node: host.id } });
@@ -167,7 +168,7 @@ function zoneMenu(zoneId: string, { lens, view, live, base }: MenuContext): Menu
     title: z.label,
     sub: `${members.length} boxes${down.length ? ` · ${down.length} down` : ""}`,
     sections: dedupe([
-      [view.zone === z.id ? { do: "go", label: "Back out of this area", hint: "Esc", view: { lens: lens.id } } : { do: "go", label: "Drill in", view: { lens: lens.id, zone: z.id } }],
+      [view.zone === z.id ? { do: "go", label: "Back out of this area", hint: "Esc", view: { lens: lens.id, home: view.home } } : { do: "go", label: "Drill in", view: { lens: lens.id, zone: z.id } }],
       down.slice(0, 4).map((e): Action => ({ do: "go", tone: "bad", label: e.label, hint: "down", view: { lens: lens.id, zone: z.id, node: e.id } })),
       [
         ...(addresses.length ? [{ do: "copy" as const, label: "Copy addresses in here", text: addresses.join("\n"), hint: String(addresses.length) }] : []),

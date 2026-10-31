@@ -35,7 +35,7 @@ export default defineConfig({
     // The site folder, and the files outside it that it names; not the whole disk.
     fs: { allow: [".", ...serverConfig.fsAllow] },
   },
-  // three.js arrives as one lazy chunk when the globe sheet opens.
-  build: { chunkSizeWarningLimit: 700 },
+  // three.js and Earth's land outlines arrive as one lazy chunk when the globe sheet opens.
+  build: { chunkSizeWarningLimit: 760 },
   preview: { host: "127.0.0.1", port: 7871, strictPort: true, proxy, allowedHosts: serverConfig.allowedHosts },
 });

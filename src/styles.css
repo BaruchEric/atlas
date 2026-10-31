@@ -248,26 +248,24 @@ button.chip:hover { border-color: var(--accent); color: var(--accent); }
 .palette li .where { font: 11px var(--mono); color: var(--muted); text-align: right; }
 .palette .empty { padding: 18px; color: var(--muted); }
 
-/* The globe sheet: a canvas, with the names laid over it as buttons that follow the turn */
-.stage.globe canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
+/* The globe sheet: Earth on a canvas, with the home pin laid over it as a button that follows the turn */
+.stage.globe canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; animation: globe-in .5s ease; }
 .stage.globe.hovering canvas { cursor: pointer; }
+/* The dive ends on the roof, and the picture goes as the house comes. */
+.stage.globe.diving canvas { opacity: 0; transition: opacity .35s ease .95s; }
 .globe-labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
-.globe-label { position: absolute; left: 0; top: 0; translate: -50% 0; pointer-events: auto; cursor: pointer; border: 0; padding: 1px 8px 2px; border-radius: 999px; white-space: nowrap; background: var(--veil); box-shadow: inset 0 0 0 1px var(--label-ring, var(--rule)); font: 700 11.5px/1.35 var(--body); color: var(--fg); transition: background-color .15s, color .15s, box-shadow .15s; }
-.globe-label[data-off="1"] { pointer-events: none; }
-.globe-label.dim { color: var(--muted); box-shadow: none; }
-.globe-label.hover, .globe-label:hover { box-shadow: inset 0 0 0 1.5px var(--accent); }
-.globe-label.node.on { background: var(--accent); color: var(--paper); box-shadow: none; }
-.globe-label.zone { translate: 0 0; padding: 0 2px; background: none; box-shadow: none; font: 700 11px var(--display); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
-.globe-label.zone.home { color: var(--home); }
-.globe-label.zone.lab { color: var(--lab); }
-.globe-label.zone.host { color: var(--tail); }
-.globe-label.zone.on, .globe-label.zone:hover { color: var(--accent); box-shadow: none; }
-.globe-label:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.globe-wire-label { position: absolute; left: 0; top: 0; translate: -50% -50%; pointer-events: none; white-space: nowrap; font: 600 10.5px var(--mono); padding: 0 4px; border-radius: 4px; background: var(--veil); }
-.globe-wire-label.home { color: var(--home); } .globe-wire-label.lab { color: var(--lab); } .globe-wire-label.air { color: var(--air); }
-.globe-wire-label.sto { color: var(--sto); } .globe-wire-label.tail { color: var(--tail); } .globe-wire-label.bad { color: var(--bad); }
-.globe-wire-label.wan, .globe-wire-label.ink { color: var(--ink); }
-.globe-wire-label.dim { color: var(--muted); }
+.globe-pin { position: absolute; left: 0; top: 0; translate: -50% calc(-100% - 12px); pointer-events: auto; cursor: pointer; border: 0; display: grid; justify-items: center; padding: 4px 12px 5px; border-radius: 10px; background: var(--veil); box-shadow: inset 0 0 0 1px var(--label-ring, var(--rule)), var(--shadow); color: var(--fg); line-height: 1.25; transition: box-shadow .15s; }
+.globe-pin b { font: 800 13px var(--display); letter-spacing: .04em; }
+.globe-pin small { font: 600 10.5px var(--mono); color: var(--muted); }
+/* The tick under the pin points down at the flag. */
+.globe-pin::after { content: ""; position: absolute; left: 50%; top: 100%; width: 1.5px; height: 12px; translate: -50% 0; background: var(--accent); }
+.globe-pin[data-off="1"] { pointer-events: none; }
+.globe-pin.hover, .globe-pin:hover { box-shadow: inset 0 0 0 1.5px var(--accent), var(--shadow); }
+.globe-pin:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@keyframes globe-in { from { opacity: 0; } }
+/* Into the house from Earth: the flat sheet grows out of the roof. */
+.arrive-in > .stage { animation: house-in .7s cubic-bezier(.2, .8, .2, 1); }
+@keyframes house-in { from { opacity: 0; transform: scale(.3); filter: blur(8px); } }
 .globe-fail { position: absolute; left: 16px; right: 16px; top: 40%; margin: 0; text-align: center; color: var(--muted); }
 
 /* Holo: the same layout, lit from inside. Glow only where something is chosen or live. */
@@ -278,8 +276,9 @@ button.chip:hover { border-color: var(--accent); color: var(--accent); }
 :root[data-theme="holo"] .panel h2 { letter-spacing: .02em; }
 :root[data-theme="holo"] .map .node .body { stroke: color-mix(in srgb, var(--accent) 55%, var(--fg)); }
 :root[data-theme="holo"] .map .node.selected .body, :root[data-theme="holo"] .map .wire.lit { filter: drop-shadow(0 0 4px var(--glow)); }
-:root[data-theme="holo"] .globe-label.node.on { box-shadow: 0 0 16px var(--glow); }
-:root[data-theme="holo"] .globe-label.zone { text-shadow: 0 0 10px currentColor; }
+:root[data-theme="holo"] .globe-pin { box-shadow: inset 0 0 0 1px var(--label-ring), 0 0 18px -4px var(--glow); }
+:root[data-theme="holo"] .globe-pin b { text-transform: uppercase; letter-spacing: .14em; text-shadow: 0 0 10px var(--glow); }
+:root[data-theme="holo"] .globe-pin::after { box-shadow: 0 0 6px var(--glow); }
 
 /* Phone and narrow tablet: the panel becomes a bottom sheet over the map. */
 @media (max-width: 860px) {
@@ -303,7 +302,9 @@ button.chip:hover { border-color: var(--accent); color: var(--accent); }
 @media (prefers-reduced-motion: reduce) {
   .map .wire.flowing, .map .pulse-ring, .map .pulse-breathe, .livepill.live .dot { animation: none; }
   .panel { transition: none; }
-  .globe-label { transition: none; }
+  .globe-pin { transition: none; }
+  .stage.globe canvas, .arrive-in > .stage { animation: none; }
+  .stage.globe.diving canvas { transition: none; }
 }
 
 /* Right-click menu, and the note a copy leaves behind */

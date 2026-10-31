@@ -2,7 +2,7 @@
 import { describe, expect, test } from "bun:test";
 import { entities, lenses, site } from "@/data/site";
 import { menuFor } from "@/lib/actions";
-import { formatHash, parseHash, type View } from "@/lib/hashState";
+import { formatHash, parseHash, settle, type View } from "@/lib/hashState";
 import { emptyOrbi } from "@/live/orbi";
 import type { Live } from "@/live/prom";
 
@@ -40,7 +40,8 @@ describe(`site "${site.id}"`, () => {
   test("every sheet, area and box survives a trip through the URL hash", () => {
     for (const l of lenses) {
       const views: View[] = [{ lens: l.id }, ...l.zones.map((z) => ({ lens: l.id, zone: z.id })), ...Object.keys(l.places).map((id) => ({ lens: l.id, node: id }))];
-      for (const v of views) expect(parseHash(formatHash(v))).toEqual(v);
+      // On the globe sheet a room or a box comes back inside the house, which is where it is drawn.
+      for (const v of views) expect(parseHash(formatHash(v))).toEqual(settle(v));
     }
   });
 

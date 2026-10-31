@@ -1,25 +1,18 @@
-// The three.js side of the globe sheet: the globe and the sheet wrapped onto it, drawn as
-// paper under the light and dark themes and as a projection under holo. GlobeCanvas owns the
-// React side (labels, pointer, props) and drives this.
+// The three.js side of the globe sheet: Earth in space, turned to face the house, with a flag
+// planted on home. A printed chart under the light and dark themes, a projection under holo.
+// GlobeCanvas owns the React side (the home pin's button, the pointer, props) and drives this.
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { Line2 } from "three/examples/jsm/lines/Line2.js";
-import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
-import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
-import { entities } from "@/data/site";
-import type { Entity, Kind, Lens, Net, Place, Zone } from "@/data/types";
-import type { Lit, RoutedWire } from "@/lib/geometry";
-import { kindTone } from "@/lib/kindTone";
-import { facing, projection, samplePath, unit, type Projection } from "@/lib/globe";
+import { fibonacciSphere, landPolygons, unwrapRing, type Ring } from "@/lib/earth";
+import { facing, unit, type Home } from "@/lib/globe";
 
-// Built by the recipes in models/recipes from the Blender factory. Globbed rather than
-// imported, so a missing file leaves its pieces as plain blocks instead of breaking the build.
-const modelUrls = import.meta.glob<string>("/src/assets/models/*.glb", { query: "?url", import: "default", eager: true });
-const modelUrl = (name: string) => modelUrls[`/src/assets/models/${name}.glb`];
+// The flag is the "site" piece from the world kit (models/recipes/kit_world.py). Globbed
+// rather than imported, so a missing file leaves a plain mast instead of breaking the build.
+const kitUrl = Object.values(import.meta.glob<string>("/src/assets/models/kit-world.glb", { query: "?url", import: "default", eager: true }))[0];
 
 export interface Tokens {
   bg: THREE.Color;
@@ -29,21 +22,16 @@ export interface Tokens {
   rule: THREE.Color;
   chip: THREE.Color;
   accent: THREE.Color;
-  warn: THREE.Color;
-  bad: THREE.Color;
+  home: THREE.Color;
   dark: boolean;
-  // The holo theme: bloom, a lit rim, edge-lit pieces and the projector under the globe.
+  // The holo theme: bloom, a lit rim, land as points of light and an edge-lit flag.
   holo: boolean;
-  net: Record<Net, THREE.Color>;
-  tone: Record<string, THREE.Color>;
 }
 
-// Reads the CSS custom properties, so the globe follows the theme toggle and the system.
+// Reads the CSS custom properties, so the globe follows the theme menu and the system.
 export function readTokens(): Tokens {
   const css = getComputedStyle(document.documentElement);
   const c = (name: string) => new THREE.Color(css.getPropertyValue(`--${name}`).trim() || "#888");
-  const tone: Record<string, THREE.Color> = {};
-  for (const name of ["home", "lab", "air", "sto", "ups", "tail", "ink", "accent", "muted"]) tone[name] = c(name);
   const bg = c("bg");
   return {
     bg,
@@ -53,16 +41,11 @@ export function readTokens(): Tokens {
     rule: c("rule"),
     chip: c("chip"),
     accent: c("accent"),
-    warn: c("warn"),
-    bad: c("bad"),
+    home: c("home"),
     dark: bg.getHSL({ h: 0, s: 0, l: 0 }).l < 0.4,
     holo: css.getPropertyValue("--globe-style").trim() === "holo",
-    net: { home: c("home"), lab: c("lab"), air: c("air"), sto: c("sto"), tail: c("tail"), wan: c("ink"), ink: c("ink"), bad: c("bad") },
-    tone,
   };
 }
-
-const toneOf = (k: Kind, t: Tokens) => t.tone[/--([a-z]+)/.exec(kindTone[k])?.[1] ?? "muted"] ?? t.muted;
 
 // Whether this browser can give three.js a WebGL context at all.
 export function canDrawGlobe(): boolean {
@@ -74,171 +57,160 @@ export function canDrawGlobe(): boolean {
   }
 }
 
-export type LabelKind = "node" | "zone" | "wire";
-
-export type Pick = { kind: "node"; id: string } | { kind: "zone"; id: string } | null;
-export type Led = "up" | "down" | "asleep" | "off" | "none";
-
-interface Models {
-  kit: Map<string, THREE.Object3D>;
-}
-
-let modelsPromise: Promise<Models> | null = null;
-
-function loadModels(): Promise<Models> {
-  modelsPromise ??= (async () => {
-    const loader = new GLTFLoader();
-    const load = async (name: string) => {
-      const url = modelUrl(name);
-      if (!url) return null;
-      try {
-        return (await loader.loadAsync(url)).scene;
-      } catch {
-        return null;
-      }
-    };
-    const [gear, world] = await Promise.all([load("kit-gear"), load("kit-world")]);
-    const kit = new Map<string, THREE.Object3D>();
-    for (const root of [gear, world]) for (const child of root?.children ?? []) kit.set(child.name, child);
-    return { kit };
-  })();
-  return modelsPromise;
-}
-
-// How far the camera stands and where it looks, for the overview, a room and a box.
+// Where the camera stands: Earth's turn, and the camera's distance from its center.
 export interface Shot {
   yaw: number;
   pitch: number;
   dist: number;
-  // Height of the point the camera looks at; the globe's center is 0.
-  lookY: number;
 }
 
-interface Device {
-  id: string;
-  kind: Kind;
-  group: THREE.Group;
-  materials: THREE.MeshStandardMaterial[];
-  // Holo only: the lit edges drawn over the piece.
-  edges: THREE.LineBasicMaterial[];
-  chip: THREE.Mesh;
-  ring: THREE.Mesh;
-  // Where its label hangs, on the unrotated globe.
-  label: THREE.Vector3;
-  // The piece's stand and the surface normal under it; frames have no piece.
-  holder?: THREE.Group;
-  normal?: THREE.Vector3;
-}
-
-interface WireLine {
-  id: string;
-  net: Net;
-  line: Line2;
-  points: THREE.Vector3[];
-  lengths: number[];
-}
+export type Pick = "home" | "earth" | null;
 
 const R = 1;
-const LIFT = 1.004;
-// The box tilts out of the globe so a piece reads at three quarters, like one on a board.
-const TILT = THREE.MathUtils.degToRad(42);
-const PIECE_MAX = 0.17;
-// Every piece in the kit is scaled to a unit box; these put back their sizes next to each
-// other, so a satellite stands lower than its router and a plug is smaller than a server.
-const pieceSize: Partial<Record<Kind, number>> = { guest: 0.8, satellite: 0.76, host: 0.79, device: 0.86, moca: 0.64, power: 0.74, plug: 0.62 };
-// Holo: the projector's rings sit this far below the globe's center, and the globe turns by
-// itself at SPIN radians a second once the overview has been left alone for IDLE ms.
-const BASE_Y = -1.32;
-const SPIN = 0.05;
-const IDLE = 4000;
+// Home sits this far below the middle of the overview, so its flag stands up into the picture.
+// The drop fades out as the camera closes in, so a zoom or a dive keeps home in view.
+const DROP = 0.24;
+// The flag leans back toward the viewer as far as home faces them, so it reads at three quarters.
+const TILT = THREE.MathUtils.degToRad(30);
+const FLAG = 0.24;
+// The nearest a zoom goes. Zooming past it with home in front takes you inside.
+const NEAR = R + 0.42;
+const FAR = R + 40;
+// How close to home a click on Earth still counts as home, in radians of arc.
+const HOME_PICK = 0.09;
+const MOON = { r: 0.27, orbit: 3.6, center: new THREE.Vector3(0.4, 1.25, -6.2) };
+
+let kitPromise: Promise<THREE.Object3D | null> | null = null;
+
+function loadFlag(): Promise<THREE.Object3D | null> {
+  kitPromise ??= (async () => {
+    if (!kitUrl) return null;
+    try {
+      const kit = (await new GLTFLoader().loadAsync(kitUrl)).scene;
+      return kit.children.find((c) => c.name === "site") ?? null;
+    } catch {
+      return null;
+    }
+  })();
+  return kitPromise;
+}
+
+interface Flight {
+  from: Shot;
+  to: Shot;
+  start: number;
+  dur: number;
+  ease: (k: number) => number;
+  done?: () => void;
+}
+
+const easeOut = (k: number) => 1 - Math.pow(1 - k, 3);
+const easeInOut = (k: number) => (k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2);
 
 export class GlobeScene {
   readonly renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
-  private camera = new THREE.PerspectiveCamera(32, 1, 0.05, 60);
-  private globe = new THREE.Group();
-  private sheet = new THREE.Group();
-  private stand = new THREE.Group();
-  private surface: THREE.Mesh;
-  private paperSurface = new THREE.MeshStandardMaterial({ roughness: 0.85, metalness: 0 });
-  private holoSurface = rimMaterial();
+  private camera = new THREE.PerspectiveCamera(32, 1, 0.01, 500);
+  // Everything that turns with Earth: the surface, its land and lines, and the flag.
+  private earth = new THREE.Group();
+  private landCanvas = document.createElement("canvas");
+  private landTexture: THREE.CanvasTexture;
+  private surface: THREE.Mesh<THREE.SphereGeometry, THREE.ShaderMaterial>;
+  private dots: THREE.Points<THREE.BufferGeometry, THREE.ShaderMaterial> | null = null;
+  private coast: THREE.LineSegments<THREE.BufferGeometry, THREE.LineBasicMaterial>;
+  private graticule: THREE.LineSegments<THREE.BufferGeometry, THREE.LineBasicMaterial>;
   private atmosphere = new THREE.Mesh(new THREE.SphereGeometry(R * 1.16, 64, 48), haloMaterial(R / 1.16));
-  private projector = projectorBase();
-  private graticule: THREE.LineSegments;
+  private stars = starField(2600);
+  private moon: THREE.Mesh<THREE.SphereGeometry, THREE.ShaderMaterial>;
+  private moonTexture: THREE.CanvasTexture;
+  private flag = new THREE.Group();
+  private flagParts: { materials: THREE.MeshStandardMaterial[]; edges: THREE.LineBasicMaterial[] } = { materials: [], edges: [] };
+  private flagPiece: THREE.Object3D | null = null;
+  private pulses: THREE.Mesh<THREE.RingGeometry, THREE.MeshBasicMaterial>[] = [];
   private hemi = new THREE.HemisphereLight(0xffffff, 0x6f7d79, 1.15);
   private key = new THREE.DirectionalLight(0xffffff, 2.2);
   private rim = new THREE.DirectionalLight(0xffffff, 0.9);
   private post: { composer: EffectComposer; bloom: UnrealBloomPass } | null = null;
-  private idleSince = performance.now();
-  // Reasons the idle spin waits: a pointer over the stage, or focus on one of its names.
-  private holds = new Set<string>();
-  private lastFrame = performance.now();
-  private devices = new Map<string, Device>();
-  private zones = new Map<string, { mesh: THREE.Mesh; outline: Line2; zone: Zone; label: THREE.Vector3 }>();
-  private wires: WireLine[] = [];
-  private wireLabels = new Map<string, THREE.Vector3>();
-  private packets: { mesh: THREE.Mesh; wire: WireLine; offset: number }[] = [];
-  private lineMaterials: LineMaterial[] = [];
+  private polygons = landPolygons();
+  private home: Home;
+  // Home on the unturned globe, as a unit vector.
+  private homeAt: THREE.Vector3;
   private tokens: Tokens;
-  private lens: Lens | null = null;
-  private proj: Projection | null = null;
-  private models: Models | null = null;
-  private lit: Lit | null = null;
-  private selected: string | undefined;
-  private zone: string | undefined;
-  private leds: Record<string, Led> = {};
   private size = { w: 1, h: 1, inset: 0 };
-  private shot: Shot = { yaw: -1.1, pitch: 0.25, dist: 7, lookY: -0.6 };
+  private shot: Shot;
+  private flight: Flight | null = null;
+  private start = performance.now();
+  private hover = false;
   private frame = 0;
   private dirty = true;
   private disposed = false;
   private raycaster = new THREE.Raycaster();
-  // Called after each drawn frame, so the HTML labels can follow.
+  // Called after each drawn frame, so the home button can follow.
   onFrame: (() => void) | null = null;
   reduced: boolean;
 
-  constructor(canvas: HTMLCanvasElement, reduced: boolean) {
+  constructor(canvas: HTMLCanvasElement, reduced: boolean, home: Home) {
     this.reduced = reduced;
+    this.home = home;
+    this.homeAt = new THREE.Vector3(...unit(home.lat, home.lon));
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.tokens = readTokens();
+    this.shot = this.overview();
 
     this.key.position.set(-3, 5, 6);
     this.rim.position.set(4, 2, -5);
     this.scene.add(this.hemi, this.key, this.rim);
 
-    this.surface = new THREE.Mesh(new THREE.SphereGeometry(R, 96, 64), this.paperSurface);
-    this.surface.userData.pick = "surface";
-    this.graticule = new THREE.LineSegments(graticuleGeometry(), new THREE.LineBasicMaterial({ transparent: true, opacity: 0.9 }));
-    this.globe.add(this.surface, this.graticule, this.sheet);
-    this.projector.position.y = BASE_Y;
-    this.stand.add(this.atmosphere, this.projector);
-    this.scene.add(this.globe, this.stand);
-    this.applyStyle();
+    this.landCanvas.width = 2048;
+    this.landCanvas.height = 1024;
+    this.landTexture = new THREE.CanvasTexture(this.landCanvas);
+    this.landTexture.colorSpace = THREE.SRGBColorSpace;
+    this.landTexture.anisotropy = 4;
+    this.surface = new THREE.Mesh(new THREE.SphereGeometry(R, 128, 96), surfaceMaterial(this.landTexture));
+    // SphereGeometry starts its u at -x, which unit() calls 90° west; a flat map starts at 180°.
+    this.surface.rotation.y = -Math.PI / 2;
+    this.coast = new THREE.LineSegments(coastGeometry(this.polygons), new THREE.LineBasicMaterial({ transparent: true }));
+    this.graticule = new THREE.LineSegments(graticuleGeometry(), new THREE.LineBasicMaterial({ transparent: true }));
+    this.earth.add(this.surface, this.coast, this.graticule, this.flag);
 
-    void loadModels().then((m) => {
-      if (this.disposed) return;
-      this.models = m;
-      if (this.lens) this.buildDevices();
+    const moonCanvas = moonPaper();
+    this.moonTexture = new THREE.CanvasTexture(moonCanvas);
+    this.moonTexture.colorSpace = THREE.SRGBColorSpace;
+    this.moon = new THREE.Mesh(new THREE.SphereGeometry(MOON.r, 48, 32), surfaceMaterial(this.moonTexture));
+    this.scene.add(this.stars, this.earth, this.atmosphere, this.moon);
+
+    this.paint();
+    this.buildPulses();
+    this.flag.position.copy(this.homeAt).multiplyScalar(R * 1.001);
+    this.buildFlag();
+    this.applyStyle();
+    void loadFlag().then((piece) => {
+      if (this.disposed || !piece) return;
+      this.flagPiece = piece;
+      this.buildFlag();
       this.applyColors();
     });
     this.loop();
   }
 
-  // What changes between paper and holo beyond colour: materials, the projector and bloom.
+  // What changes between the chart and holo beyond colour: the land dots, the glow and bloom.
   private applyStyle() {
     const holo = this.tokens.holo;
-    this.surface.material = holo ? this.holoSurface : this.paperSurface;
-    const g = this.graticule.material as THREE.LineBasicMaterial;
-    g.blending = holo ? THREE.AdditiveBlending : THREE.NormalBlending;
-    g.depthWrite = !holo;
-    g.needsUpdate = true;
-    this.atmosphere.visible = holo;
-    this.projector.visible = holo;
-    if (holo) this.postFx();
-    // Pieces get lit edges under holo, so they are built again.
-    this.buildDevices();
+    if (holo) {
+      this.dots ??= this.buildDots();
+      this.postFx();
+    }
+    if (this.dots) this.dots.visible = holo;
+    this.coast.material.blending = holo ? THREE.AdditiveBlending : THREE.NormalBlending;
+    this.graticule.material.blending = holo ? THREE.AdditiveBlending : THREE.NormalBlending;
+    for (const m of [this.coast.material, this.graticule.material]) {
+      m.depthWrite = !holo;
+      m.needsUpdate = true;
+    }
+    // The flag gets lit edges under holo, so it is built again.
+    this.buildFlag();
   }
 
   // Bloom, made the first time holo is on and kept after.
@@ -248,7 +220,7 @@ export class GlobeScene {
     const target = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, samples: 4 });
     const composer = new EffectComposer(this.renderer, target);
     composer.addPass(new RenderPass(this.scene, this.camera));
-    const bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.55, 0.4, 0.32);
+    const bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.5, 0.45, 0.32);
     composer.addPass(bloom);
     composer.addPass(new OutputPass());
     composer.setSize(w, h);
@@ -256,293 +228,190 @@ export class GlobeScene {
     return this.post;
   }
 
-  setLens(lens: Lens, wires: RoutedWire[]) {
-    this.lens = lens;
-    this.proj = projection(lens);
-    this.clearSheet();
-    const p = this.proj;
-    for (const z of lens.zones) {
-      const mesh = new THREE.Mesh(patchGeometry(p, z, R * 1.0015), new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1 }));
-      mesh.userData.zone = z.id;
-      const outline = this.line(outlinePoints(p, z, R * 1.002), 1.4);
-      const [lx, ly] = z.labelAt ?? [z.x + 16, z.y + 14];
-      this.sheet.add(mesh, outline);
-      this.zones.set(z.id, { mesh, outline, zone: z, label: vec(p, lx, ly, R * 1.003) });
+  // Land as points of light, the holo look: an even spread of points over the sphere, kept
+  // where a small land mask says there is land.
+  private buildDots() {
+    const w = 1024;
+    const h = 512;
+    const c = document.createElement("canvas");
+    c.width = w;
+    c.height = h;
+    const ctx = c.getContext("2d", { willReadFrequently: true });
+    const pos: number[] = [];
+    if (ctx) {
+      ctx.fillStyle = "#fff";
+      fillLand(ctx, this.polygons, w, h);
+      const px = ctx.getImageData(0, 0, w, h).data;
+      for (const [lat, lon] of fibonacciSphere(72000)) {
+        const x = Math.min(w - 1, Math.floor(((lon + Math.PI) / (Math.PI * 2)) * w));
+        const y = Math.min(h - 1, Math.floor(((Math.PI / 2 - lat) / Math.PI) * h));
+        if ((px[(y * w + x) * 4] ?? 0) < 128) continue;
+        const [a, b, d] = unit(lat, lon);
+        pos.push(a * R * 1.003, b * R * 1.003, d * R * 1.003);
+      }
     }
-    for (const w of wires) {
-      const flat = samplePath(w.path, 6);
-      const pts = flat.map(([x, y]) => vec(p, x, y, R * LIFT));
-      if (pts.length < 2) continue;
-      const line = this.line(pts, w.net === "sto" || w.net === "tail" ? 3 : 2.2, w.dashed || w.net === "air");
-      const lengths = [0];
-      for (let i = 1; i < pts.length; i++) lengths.push((lengths[i - 1] ?? 0) + (pts[i] as THREE.Vector3).distanceTo(pts[i - 1] as THREE.Vector3));
-      line.userData.wire = w.id;
-      this.sheet.add(line);
-      this.wires.push({ id: w.id, net: w.net, line, points: pts, lengths });
-      // A hand-drawn path without labelAt has no midpoint of its own, so take the path's.
-      const [mx, my] = w.labelAt ?? (w.d ? (flat[Math.floor(flat.length / 2)] ?? w.mid) : w.mid);
-      if (w.label) this.wireLabels.set(w.id, vec(p, mx, my, R * 1.003));
-    }
-    this.buildDevices();
-    this.applyColors();
-    this.dirty = true;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+    const dots = new THREE.Points(geo, dotMaterial(this.homeAt));
+    dots.raycast = () => undefined;
+    this.earth.add(dots);
+    this.sizeDots(dots);
+    return dots;
   }
 
-  private line(points: THREE.Vector3[], width: number, dashed = false): Line2 {
-    const geo = new LineGeometry();
-    geo.setPositions(points.flatMap((v) => [v.x, v.y, v.z]));
-    const mat = new LineMaterial({ linewidth: width, transparent: true, dashed, dashSize: 0.018, gapSize: 0.013, worldUnits: false });
-    mat.resolution.set(this.size.w, this.size.h);
-    mat.userData.width = width;
-    this.lineMaterials.push(mat);
-    const line = new Line2(geo, mat);
-    if (dashed) line.computeLineDistances();
-    return line;
+  private sizeDots(dots = this.dots) {
+    if (!dots) return;
+    const half = Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2));
+    const u = dots.material.uniforms.scale;
+    if (u) u.value = (this.size.h * this.renderer.getPixelRatio()) / (2 * half);
+    const cap = dots.material.uniforms.cap;
+    if (cap) cap.value = 7 * this.renderer.getPixelRatio();
   }
 
-  private buildDevices() {
-    const lens = this.lens;
-    const p = this.proj;
-    if (!lens || !p) return;
-    for (const d of this.devices.values()) {
-      this.sheet.remove(d.group, d.chip, d.ring);
-      disposeTree(d.group);
-      disposeTree(d.chip);
-      disposeTree(d.ring);
-    }
-    this.devices.clear();
-    for (const [id, place] of Object.entries(lens.places)) {
-      const e = entities[id];
-      if (!e) continue;
-      this.devices.set(id, this.device(e, place, p));
+  // Two rings that spread out from home over and over, flat on the ground.
+  private buildPulses() {
+    for (let i = 0; i < 2; i++) {
+      const ring = new THREE.Mesh(new THREE.RingGeometry(0.82, 1, 64), new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, side: THREE.DoubleSide }));
+      ring.position.copy(this.homeAt).multiplyScalar(R * 1.002);
+      ring.lookAt(this.homeAt.clone().multiplyScalar(2));
+      ring.raycast = () => undefined;
+      this.earth.add(ring);
+      this.pulses.push(ring);
     }
   }
 
-  private device(e: Entity, place: Place, p: Projection): Device {
-    const chip = new THREE.Mesh(patchGeometry(p, place, R * 1.001, 0.15), new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2 }));
-    chip.userData.id = e.id;
-    const group = new THREE.Group();
-    group.userData.id = e.id;
-    const materials: THREE.MeshStandardMaterial[] = [];
-    const edges: THREE.LineBasicMaterial[] = [];
-    const holo = this.tokens.holo;
-    const frame = place.shape === "frame";
-    let stand: THREE.Group | undefined;
-    let normal: THREE.Vector3 | undefined;
-    // Frames hold other boxes; on the globe they are a patch with a label and no piece.
-    if (!frame) {
-      const piece = this.piece(e.kind);
-      const box = new THREE.Box3().setFromObject(piece);
-      const sz = box.getSize(new THREE.Vector3());
-      const s = Math.min((place.w * p.scale * 0.7) / Math.max(sz.x, 1e-3), (PIECE_MAX * (pieceSize[e.kind] ?? 1)) / Math.max(sz.x, sz.y, sz.z, 1e-3));
-      const holder = new THREE.Group();
-      // Base and back both rest on the globe, so a piece that stands straight up at the rim
-      // lies along the surface instead of sinking into it.
-      piece.position.set(-(box.min.x + box.max.x) / 2, -box.min.y, -box.min.z);
-      holder.add(piece);
-      holder.scale.setScalar(s);
-      const cx = place.x + place.w / 2;
-      const base = place.y + place.h * 0.72;
-      normal = vec(p, cx, base, 1).normalize();
-      holder.position.copy(normal).multiplyScalar(R * 1.002);
-      group.add(holder);
-      stand = holder;
-      piece.traverse((o) => {
-        if (!(o instanceof THREE.Mesh)) return;
-        o.userData.id = e.id;
-        const list = Array.isArray(o.material) ? o.material : [o.material];
-        const mats = list.map((m: THREE.Material) => {
-          const c = m instanceof THREE.MeshStandardMaterial ? m.clone() : new THREE.MeshStandardMaterial({ name: m.name || "body" });
-          c.flatShading = true;
-          c.userData.role = (m.name || "body").replace(/\.\d+$/, "");
-          // Faces step back a hair so the lit edges drawn on them always win the depth test.
-          c.polygonOffset = holo;
-          c.polygonOffsetFactor = 1;
-          c.polygonOffsetUnits = 1;
-          materials.push(c);
-          return c;
-        });
-        o.material = Array.isArray(o.material) ? mats : (mats[0] as THREE.MeshStandardMaterial);
-        if (holo) {
-          const mat = new THREE.LineBasicMaterial({ transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
-          const edge = new THREE.LineSegments(new THREE.EdgesGeometry(o.geometry, 28), mat);
-          // A line's pick threshold is a whole world unit; the mesh under it already picks.
-          edge.raycast = () => undefined;
-          o.add(edge);
-          edges.push(mat);
-        }
-      });
-    }
-    const ring = new THREE.Mesh(outlineRing(p, place, R * 1.0025), new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false }));
-    ring.visible = false;
-    this.sheet.add(chip, group, ring);
-    return { id: e.id, kind: e.kind, group, materials, edges, chip, ring, label: vec(p, place.x + place.w / 2, place.y + place.h + 4, R * 1.003), holder: stand, normal };
-  }
-
-  // A kit piece by kind, or a chamfered block when the kit lacks it or hasn't loaded.
-  private piece(kind: Kind): THREE.Object3D {
-    const src = this.models?.kit.get(kind) ?? this.models?.kit.get("device");
-    if (src) {
-      const c = src.clone(true);
-      c.position.set(0, 0, 0);
-      return c;
-    }
-    const block = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.5, 0.6), new THREE.MeshStandardMaterial({ name: "body" }));
-    const led = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.08, 0.04), new THREE.MeshStandardMaterial({ name: "led" }));
-    led.position.set(0.25, 0.12, 0.31);
-    block.add(led);
-    block.position.y = 0.25;
-    const g = new THREE.Group();
-    g.add(block);
-    return g;
-  }
-
-  private clearSheet() {
-    for (const child of [...this.sheet.children]) {
-      this.sheet.remove(child);
+  // The flag on home: the kit's piece once it loads, a plain mast and pennant until then.
+  private buildFlag() {
+    for (const child of [...this.flag.children]) {
+      this.flag.remove(child);
       disposeTree(child);
     }
-    for (const pk of this.packets) disposeTree(pk.mesh);
-    this.devices.clear();
-    this.zones.clear();
-    this.wireLabels.clear();
-    this.wires = [];
-    this.packets = [];
-    this.lineMaterials = [];
+    const piece = this.flagPiece ? this.flagPiece.clone(true) : plainFlag();
+    piece.position.set(0, 0, 0);
+    const box = new THREE.Box3().setFromObject(piece);
+    const sz = box.getSize(new THREE.Vector3());
+    // The kit's origin is the foot of the mast, so the mast stands on home and the pennant
+    // flies off to one side; only the height is set from the box.
+    piece.position.set(0, -box.min.y, 0);
+    const holder = new THREE.Group();
+    holder.add(piece);
+    holder.userData.scale = FLAG / Math.max(sz.x, sz.y, sz.z, 1e-3);
+    holder.scale.setScalar(holder.userData.scale as number);
+    holder.userData.top = sz.y;
+    this.flag.add(holder);
+    const holo = this.tokens.holo;
+    const materials: THREE.MeshStandardMaterial[] = [];
+    const edges: THREE.LineBasicMaterial[] = [];
+    piece.traverse((o) => {
+      if (!(o instanceof THREE.Mesh)) return;
+      o.userData.home = true;
+      const list = Array.isArray(o.material) ? o.material : [o.material];
+      const mats = list.map((m: THREE.Material) => {
+        const c = m instanceof THREE.MeshStandardMaterial ? m.clone() : new THREE.MeshStandardMaterial({ name: m.name || "body" });
+        c.flatShading = true;
+        c.userData.role = (m.name || "body").replace(/\.\d+$/, "");
+        // Faces step back a hair so the lit edges drawn on them always win the depth test.
+        c.polygonOffset = holo;
+        c.polygonOffsetFactor = 1;
+        c.polygonOffsetUnits = 1;
+        materials.push(c);
+        return c;
+      });
+      o.material = Array.isArray(o.material) ? mats : (mats[0] as THREE.MeshStandardMaterial);
+      if (holo) {
+        const mat = new THREE.LineBasicMaterial({ transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
+        const edge = new THREE.LineSegments(new THREE.EdgesGeometry(o.geometry, 28), mat);
+        edge.raycast = () => undefined;
+        o.add(edge);
+        edges.push(mat);
+      }
+    });
+    this.flagParts = { materials, edges };
+    this.applyColors();
   }
 
   setTokens(t: Tokens) {
     const restyle = t.holo !== this.tokens.holo;
     this.tokens = t;
     if (restyle) this.applyStyle();
+    this.paint();
     this.applyColors();
-    // Holo's overview takes in the projector, so it frames differently.
-    if (restyle && this.aimed && !this.aimed.node && !this.aimed.zone) this.aim(undefined, undefined);
   }
 
-  setFocus(lit: Lit | null, node: string | undefined, zone: string | undefined) {
-    this.lit = lit;
-    this.selected = node;
-    this.zone = zone;
-    this.applyColors();
-    this.buildPackets();
-  }
-
-  setLeds(leds: Record<string, Led>) {
-    this.leds = leds;
-    this.applyColors();
+  // The map on Earth's surface. The chart: pale sea and paper land. Holo: deep sea and land a
+  // shade up, with the dots carrying the light.
+  private paint() {
+    const t = this.tokens;
+    const sea = t.holo ? t.paper.clone().lerp(t.bg, 0.25) : t.dark ? t.bg.clone().lerp(t.home, 0.14) : t.chip.clone().lerp(t.home, 0.16);
+    const land = t.holo ? t.paper.clone().lerp(t.accent, 0.08) : t.dark ? t.chip.clone() : t.paper.clone();
+    paintLand(this.landCanvas, this.polygons, sea, land);
+    this.landTexture.needsUpdate = true;
   }
 
   private applyColors() {
     const t = this.tokens;
-    const lit = this.lit;
     const holo = t.holo;
     this.scene.background = t.bg;
-    this.paperSurface.color.copy(t.paper).lerp(t.bg, t.dark ? 0.15 : 0.04);
-    this.holoSurface.uniforms.core?.value.copy(t.paper).lerp(t.bg, 0.35);
-    this.holoSurface.uniforms.rim?.value.copy(t.accent).multiplyScalar(0.5);
-    this.atmosphere.material.uniforms.rim?.value.copy(t.accent);
-    this.projector.traverse((o) => {
-      if (!(o instanceof THREE.Mesh || o instanceof THREE.LineSegments)) return;
-      const m = o.material as THREE.MeshBasicMaterial | THREE.ShaderMaterial;
-      if (m instanceof THREE.ShaderMaterial) m.uniforms.color?.value.copy(t.accent);
-      else m.color.copy(t.accent);
-    });
-    const grid = this.graticule.material as THREE.LineBasicMaterial;
-    grid.color.copy(holo ? t.accent : t.rule);
-    grid.opacity = holo ? 0.16 : 0.9;
-    // Holo lights the pieces cool from above and cyan from behind, so their outlines read.
+    const su = this.surface.material.uniforms;
+    su.rim?.value.copy(holo ? t.accent : t.home);
+    if (su.rimMix) su.rimMix.value = holo ? 0.4 : t.dark ? 0.25 : 0.12;
+    if (su.shade) su.shade.value = holo ? 0.35 : 1;
+    const mu = this.moon.material.uniforms;
+    mu.rim?.value.copy(holo ? t.accent : t.muted);
+    if (mu.rimMix) mu.rimMix.value = holo ? 0.45 : 0.15;
+    if (mu.shade) mu.shade.value = 1;
+    mu.tint?.value.copy(holo ? t.paper.clone().lerp(t.accent, 0.12) : t.dark ? t.muted.clone().lerp(t.bg, 0.35) : t.rule.clone().lerp(t.paper, 0.2));
+    this.coast.material.color.copy(holo ? t.accent : t.muted);
+    this.coast.material.opacity = holo ? 0.3 : 0.55;
+    this.graticule.material.color.copy(holo ? t.accent : t.rule);
+    this.graticule.material.opacity = holo ? 0.1 : t.dark ? 0.5 : 0.8;
+    this.atmosphere.visible = holo || t.dark;
+    this.atmosphere.material.uniforms.rim?.value.copy(holo ? t.accent : t.home);
+    const su2 = this.stars.material.uniforms;
+    su2.color?.value.copy(holo ? t.fg : t.dark ? t.fg : t.muted);
+    if (su2.opacity) su2.opacity.value = holo ? 1 : t.dark ? 0.8 : 0.45;
+    this.stars.material.blending = t.dark ? THREE.AdditiveBlending : THREE.NormalBlending;
+    this.stars.material.needsUpdate = true;
+    const du = this.dots?.material.uniforms;
+    du?.color?.value.copy(t.accent);
+    du?.hot?.value.copy(t.accent.clone().lerp(t.fg, 0.3));
+    for (const p of this.pulses) p.material.color.copy(t.accent);
+    for (const p of this.pulses) p.material.blending = t.dark ? THREE.AdditiveBlending : THREE.NormalBlending;
+    // Holo lights the flag cool from above and cyan from behind, so its outline reads.
     this.hemi.color.copy(holo ? t.fg : new THREE.Color(0xffffff));
     this.hemi.groundColor.copy(holo ? t.bg : new THREE.Color(0x6f7d79));
     this.hemi.intensity = holo ? 0.55 : 1.15;
     this.key.intensity = holo ? 1.1 : 2.2;
     this.rim.color.copy(holo ? t.accent : new THREE.Color(0xffffff));
     this.rim.intensity = holo ? 2.4 : 0.9;
-    for (const { mesh, outline, zone } of this.zones.values()) {
-      const room = holo ? t.accent : t.rule;
-      const tone = zone.tone === "room" ? room : zone.tone === "host" ? t.net.tail : (t.tone[zone.tone] ?? room);
-      const fill = mesh.material as THREE.MeshBasicMaterial;
-      const active = this.zone === zone.id;
-      fill.color.copy(zone.tone === "room" ? t.chip : tone);
-      fill.opacity = (zone.tone === "room" ? 0.55 : 0.1) * (lit ? 0.6 : 1) + (active ? 0.15 : 0);
-      const om = outline.material as LineMaterial;
-      om.color.copy(active ? t.accent : tone);
-      om.opacity = (lit ? 0.4 : 1) * (holo && zone.tone === "room" && !active ? 0.5 : 1);
-      om.linewidth = active ? 2.4 : 1.4;
+    for (const m of this.flagParts.materials) {
+      const role = m.userData.role as string;
+      m.color.copy(this.roleColor(role));
+      const glow = role === "led" ? t.accent : holo && role === "accent" ? t.accent : null;
+      m.emissive.copy(glow ?? new THREE.Color(0));
+      m.emissiveIntensity = role === "led" ? (holo ? 2 : 1) : holo && role === "accent" ? 0.35 : 0;
+      m.roughness = 0.7;
+      m.metalness = 0;
     }
-    for (const w of this.wires) {
-      const m = w.line.material as LineMaterial;
-      const on = !!lit?.wires.has(w.id);
-      m.color.copy(t.net[w.net]);
-      m.opacity = lit && !on ? 0.16 : 1;
-      m.linewidth = ((m.userData.width as number) ?? 2) * (on ? 1.6 : 1);
-    }
-    for (const d of this.devices.values()) {
-      const dim = !!lit && !lit.nodes.has(d.id);
-      const sel = this.selected === d.id;
-      const chip = d.chip.material as THREE.MeshBasicMaterial;
-      chip.color.copy(sel ? t.accent : t.paper);
-      chip.opacity = sel ? 0.22 : dim ? 0.15 : 0.4;
-      d.ring.visible = sel;
-      (d.ring.material as THREE.MeshBasicMaterial).color.copy(t.accent);
-      const led = this.ledColor(d.id);
-      for (const m of d.materials) {
-        const role = m.userData.role as string;
-        const base = this.roleColor(role, d.kind, led);
-        m.color.copy(dim ? base.lerp(t.bg, 0.6) : base);
-        const glow = role === "led" ? led : holo && role === "screen" ? t.accent : holo && role === "accent" ? toneOf(d.kind, t) : null;
-        m.emissive.copy(glow && !dim ? glow : new THREE.Color(0));
-        m.emissiveIntensity = role === "led" ? (holo ? 1.6 : 0.9) : holo ? (role === "screen" ? 0.12 : 0.25) : 0;
-        m.roughness = role === "screen" ? 0.35 : 0.7;
-        m.metalness = 0;
-      }
-      for (const m of d.edges) {
-        m.color.copy(sel ? t.accent : toneOf(d.kind, t));
-        m.opacity = dim ? 0.12 : sel ? 1 : 0.7;
-      }
+    for (const m of this.flagParts.edges) {
+      m.color.copy(t.accent);
+      m.opacity = this.hover ? 1 : 0.75;
     }
     this.dirty = true;
   }
 
   // What each material role in the kit becomes under the current theme.
-  private roleColor(role: string, kind: Kind, led: THREE.Color): THREE.Color {
+  private roleColor(role: string): THREE.Color {
     const t = this.tokens;
-    // Holo pieces are dark glass; their edges and lights carry the colour.
     if (t.holo) {
-      if (role === "led") return led.clone();
-      if (role === "accent") return toneOf(kind, t).clone().lerp(t.bg, 0.55);
-      if (role === "screen") return t.accent.clone().lerp(t.bg, 0.75);
+      if (role === "led") return t.accent.clone();
+      if (role === "accent") return t.accent.clone().lerp(t.bg, 0.4);
       return t.paper.clone().lerp(t.accent, role === "trim" ? 0.12 : 0.05);
     }
     if (role === "trim") return t.fg.clone().lerp(t.paper, t.dark ? 0.55 : 0.35);
-    if (role === "accent") return toneOf(kind, t).clone();
-    if (role === "screen") return t.fg.clone().lerp(t.bg, t.dark ? 0.85 : 0.1);
-    if (role === "led") return led.clone();
+    if (role === "accent") return t.accent.clone();
+    if (role === "led") return t.accent.clone();
     return t.dark ? t.paper.clone().lerp(t.fg, 0.18) : t.paper.clone();
-  }
-
-  private ledColor(id: string): THREE.Color {
-    const t = this.tokens;
-    const pulse = this.leds[id] ?? "none";
-    return pulse === "up" ? t.accent : pulse === "down" ? t.bad : pulse === "asleep" ? t.warn : t.muted;
-  }
-
-  // Beads that run along the lit route, the globe's version of the sheet's packets.
-  private buildPackets() {
-    for (const pk of this.packets) {
-      this.sheet.remove(pk.mesh);
-      disposeTree(pk.mesh);
-    }
-    this.packets = [];
-    if (!this.lit || this.reduced) return;
-    for (const w of this.wires) {
-      if (!this.lit.wires.has(w.id)) continue;
-      for (let i = 0; i < 2; i++) {
-        const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.009, 10, 8), new THREE.MeshBasicMaterial({ color: this.tokens.net[w.net] }));
-        this.sheet.add(mesh);
-        this.packets.push({ mesh, wire: w, offset: i / 2 });
-      }
-    }
   }
 
   resize(w: number, h: number, inset: number) {
@@ -552,194 +421,200 @@ export class GlobeScene {
     // Shift the picture up by half the bottom sheet, so what it frames stays in view.
     this.camera.setViewOffset(this.size.w, this.size.h, 0, inset / 2, this.size.w, this.size.h);
     this.camera.updateProjectionMatrix();
-    for (const m of this.lineMaterials) m.resolution.set(this.size.w, this.size.h);
     this.post?.composer.setSize(this.size.w, this.size.h);
+    const su = this.stars.material.uniforms.scale;
+    if (su) su.value = this.renderer.getPixelRatio();
+    this.sizeDots();
     this.dirty = true;
   }
 
-  // The shot that frames the whole globe, a room, or one box.
-  shotFor(node: string | undefined, zone: string | undefined): Shot {
-    const lens = this.lens;
-    const p = this.proj;
+  // Earth whole and home toward you; the loop drops it a little below the middle.
+  overview(): Shot {
     const vis = this.size.h - this.size.inset;
     const aspect = this.size.w / Math.max(vis, this.size.h * 0.35);
     const half = Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2));
-    const fitDist = (hw: number, hh: number) => Math.max(hh / half, hw / (half * aspect));
-    const place = node ? lens?.places[node] : undefined;
-    const z = zone ? lens?.zones.find((x) => x.id === zone) : undefined;
-    if (p && place) return { ...facing(p, place.x + place.w / 2, place.y + place.h / 2), dist: R + fitDist(0.85, 0.85), lookY: 0 };
-    if (p && z) {
-      return { ...facing(p, z.x + z.w / 2, z.y + z.h / 2), dist: R + fitDist(z.w * p.scale * 0.6, z.h * p.scale * 0.6), lookY: 0 };
-    }
-    // Holo stands the globe on its projector, so the overview takes that in too. Its rings
-    // reach toward the camera, which drops their front edge lower than BASE_Y on screen.
-    const top = 1.1;
-    const bottom = this.tokens.holo ? BASE_Y - 0.45 : -1.1;
-    return { yaw: 0, pitch: lens && p ? facing(p, lens.width / 2, lens.height / 2).pitch + 0.12 : 0.12, dist: fitDist(this.tokens.holo ? 1.35 : 1.25, (top - bottom) / 2 + 0.18), lookY: (top + bottom) / 2 };
+    const f = facing(this.home.lat, this.home.lon);
+    return { yaw: f.yaw, pitch: f.pitch, dist: Math.max(1.5 / half, 1.5 / (half * aspect)) };
   }
 
-  private flight: { from: Shot; to: Shot; start: number; dur: number } | null = null;
-  private aimed: { node?: string; zone?: string } | null = null;
-
-  // Fly to whatever frames this selection, and remember it for when the models arrive.
-  aim(node: string | undefined, zone: string | undefined) {
-    this.aimed = { node, zone };
-    this.flyTo(this.shotFor(node, zone));
+  // Deep space, Earth small and turned away: where the opening flight starts.
+  private far(): Shot {
+    const f = facing(this.home.lat, this.home.lon);
+    return { yaw: f.yaw + 2.3, pitch: f.pitch + 0.55, dist: R + 34 };
   }
 
-  flyTo(to: Shot, instant = this.reduced) {
-    this.poke();
+  // Over home, looking straight down from about a thousand kilometres up, where the coast still
+  // reads: where a dive ends and a climb out starts.
+  private close(): Shot {
+    const f = facing(this.home.lat, this.home.lon);
+    return { yaw: f.yaw, pitch: f.pitch, dist: R + 0.18 };
+  }
+
+  // The opening shot. "far" comes in from deep space, "close" climbs out from the house.
+  arrive(from: "far" | "close") {
+    if (this.reduced) return this.flyTo(this.overview(), { instant: true });
+    this.shot = from === "far" ? this.far() : this.close();
+    this.flyTo(this.overview(), { dur: from === "far" ? 2600 : 1500, ease: easeOut });
+  }
+
+  // Down onto the roof, then done, which is when GlobeCanvas switches to the house.
+  dive(done: () => void) {
+    if (this.reduced) return done();
+    this.flyTo(this.close(), { dur: 1300, ease: easeInOut, done });
+  }
+
+  get diving(): boolean {
+    return !!this.flight?.done;
+  }
+
+  get flying(): boolean {
+    return !!this.flight;
+  }
+
+  fit() {
+    this.flyTo(this.overview());
+  }
+
+  flyTo(to: Shot, opts: { instant?: boolean; dur?: number; ease?: (k: number) => number; done?: () => void } = {}) {
     const from = { ...this.shot };
     // The short way round.
     const dy = Math.atan2(Math.sin(to.yaw - from.yaw), Math.cos(to.yaw - from.yaw));
     const target = { ...to, yaw: from.yaw + dy };
-    if (instant) {
+    if (opts.instant ?? this.reduced) {
       this.flight = null;
       this.shot = target;
       this.dirty = true;
+      opts.done?.();
       return;
     }
-    this.flight = { from, to: target, start: performance.now(), dur: 900 };
-  }
-
-  // Anything the viewer does holds off the idle spin for a while.
-  poke() {
-    this.idleSince = performance.now();
-  }
-
-  // Holds the idle spin for as long as the reason lasts.
-  hold(why: string, on: boolean) {
-    if (on) this.holds.add(why);
-    else this.holds.delete(why);
-    this.poke();
+    this.flight = { from, to: target, start: performance.now(), dur: opts.dur ?? 900, ease: opts.ease ?? easeOut, done: opts.done };
   }
 
   turn(dx: number, dy: number) {
-    this.poke();
+    if (this.diving) return;
     this.flight = null;
     const k = 0.0042 * Math.min(1, (this.shot.dist - R) / 3);
     this.shot.yaw += dx * k;
-    this.shot.pitch = THREE.MathUtils.clamp(this.shot.pitch + dy * k, -1.35, 1.35);
+    this.shot.pitch = THREE.MathUtils.clamp(this.shot.pitch + dy * k, -1.4, 1.4);
     this.dirty = true;
   }
 
-  zoom(factor: number) {
-    this.poke();
+  // Zooms by factor, and says whether it pressed in past the nearest it goes.
+  zoom(factor: number): boolean {
+    if (this.diving) return false;
     this.flight = null;
     const span = (this.shot.dist - R) * factor;
-    this.shot.dist = R + THREE.MathUtils.clamp(span, 0.6, 9);
-    // Zoomed in, look at the globe's center; out, at the overview's.
-    const out = this.shotFor(undefined, undefined);
-    const t = THREE.MathUtils.clamp((this.shot.dist - 2.4) / Math.max(out.dist - 2.4, 0.1), 0, 1);
-    this.shot.lookY = out.lookY * t;
+    this.shot.dist = R + THREE.MathUtils.clamp(span, NEAR - R, FAR - R);
     this.dirty = true;
+    return factor < 1 && span < NEAR - R;
+  }
+
+  // How squarely home faces the camera: 1 head-on, 0 at the rim, below 0 round the back.
+  homeFacing(): number {
+    const n = this.homeAt.clone().applyQuaternion(this.earth.quaternion);
+    return n.dot(this.camera.position.clone().sub(n).normalize());
+  }
+
+  // How near home is to the middle of the view, seen from Earth's center: 1 dead ahead.
+  // Unlike homeFacing it doesn't fall as the camera closes in.
+  homeAhead(): number {
+    return this.homeAt.clone().applyQuaternion(this.earth.quaternion).dot(this.camera.position.clone().normalize());
+  }
+
+  setHover(on: boolean) {
+    if (on === this.hover) return;
+    this.hover = on;
+    this.applyColors();
   }
 
   pick(ndcX: number, ndcY: number): Pick {
     this.raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), this.camera);
-    const hits = this.raycaster.intersectObjects([this.surface, this.sheet], true);
-    for (const h of hits) {
-      if (h.object instanceof Line2) continue;
-      // Anything past the globe's own surface is on the far side.
-      if (h.object === this.surface) break;
-      const id = h.object.userData.id as string | undefined;
-      if (id) return { kind: "node", id };
-      const zone = h.object.userData.zone as string | undefined;
-      if (zone) return { kind: "zone", id: zone };
-    }
-    return null;
+    const hit = this.raycaster.intersectObjects([this.surface, this.flag], true)[0];
+    if (!hit) return null;
+    if (hit.object.userData.home) return "home";
+    const local = this.earth.worldToLocal(hit.point.clone()).normalize();
+    return local.angleTo(this.homeAt) < HOME_PICK ? "home" : "earth";
   }
 
-  // Screen position of a label and how squarely it faces the camera, 1 head-on, below 0 behind.
-  labelAt(kind: LabelKind, id: string): { x: number; y: number; facing: number } | null {
-    const v = kind === "node" ? this.devices.get(id)?.label : kind === "zone" ? this.zones.get(id)?.label : this.wireLabels.get(id);
-    if (!v) return null;
-    const world = v.clone().applyQuaternion(this.globe.quaternion);
-    const toCam = this.camera.position.clone().sub(world).normalize();
-    const f = world.clone().normalize().dot(toCam);
-    const s = world.project(this.camera);
-    return { x: ((s.x + 1) / 2) * this.size.w, y: ((1 - s.y) / 2) * this.size.h, facing: f };
-  }
-
-  get current(): Shot {
-    return { ...this.shot };
+  // Screen position of the top of the flag, where the home button hangs, and how squarely
+  // home faces the camera.
+  homeLabel(): { x: number; y: number; facing: number } {
+    const holder = this.flag.children[0];
+    const top = holder ? holder.localToWorld(new THREE.Vector3(0, (holder.userData.top as number) ?? 1, 0)) : this.homeAt.clone().applyQuaternion(this.earth.quaternion);
+    const s = top.project(this.camera);
+    return { x: ((s.x + 1) / 2) * this.size.w, y: ((1 - s.y) / 2) * this.size.h, facing: this.homeFacing() };
   }
 
   private loop = () => {
     if (this.disposed) return;
     this.frame = requestAnimationFrame(this.loop);
     const now = performance.now();
-    const dt = Math.min(0.05, (now - this.lastFrame) / 1000);
-    this.lastFrame = now;
-    // Holo's overview turns slowly by itself, like a projection left running.
-    if (this.tokens.holo && !this.reduced && !this.flight && !this.aimed?.node && !this.aimed?.zone && !this.holds.size && now - this.idleSince > IDLE) {
-      this.shot.yaw += dt * SPIN;
-      this.dirty = true;
-    }
     if (this.flight) {
       const f = this.flight;
-      const k = Math.min(1, (performance.now() - f.start) / f.dur);
-      const e = 1 - Math.pow(1 - k, 3);
+      const k = Math.min(1, (now - f.start) / f.dur);
+      const e = f.ease(k);
       this.shot = {
         yaw: f.from.yaw + (f.to.yaw - f.from.yaw) * e,
         pitch: f.from.pitch + (f.to.pitch - f.from.pitch) * e,
-        // Zoom on a log scale, as the flat sheets do.
+        // Distance on a log scale, so the last stretch to the ground slows the way a map's zoom does.
         dist: R + (f.from.dist - R) * Math.pow((f.to.dist - R) / (f.from.dist - R), e),
-        lookY: f.from.lookY + (f.to.lookY - f.from.lookY) * e,
       };
-      if (k >= 1) this.flight = null;
       this.dirty = true;
-    }
-    if (this.packets.length) {
-      const now = performance.now() / 1000;
-      for (const pk of this.packets) {
-        const total = pk.wire.lengths[pk.wire.lengths.length - 1] ?? 0;
-        if (!total) continue;
-        const at = (((now * 0.32) / Math.max(total, 0.2) + pk.offset) % 1) * total;
-        let i = 1;
-        while (i < pk.wire.lengths.length - 1 && (pk.wire.lengths[i] ?? 0) < at) i++;
-        const a = pk.wire.points[i - 1] as THREE.Vector3;
-        const b = pk.wire.points[i] as THREE.Vector3;
-        const l0 = pk.wire.lengths[i - 1] ?? 0;
-        const l1 = pk.wire.lengths[i] ?? l0;
-        pk.mesh.position.copy(a).lerp(b, l1 > l0 ? (at - l0) / (l1 - l0) : 0);
+      if (k >= 1) {
+        this.flight = null;
+        f.done?.();
       }
-      this.dirty = true;
     }
+    // Stars drift, the moon goes round and home pulses, unless motion is reduced.
+    const t = this.reduced ? 0 : (now - this.start) / 1000;
+    if (!this.reduced) this.dirty = true;
     if (!this.dirty) return;
     this.dirty = false;
     const s = this.shot;
-    this.globe.quaternion.setFromEuler(new THREE.Euler(s.pitch, s.yaw, 0, "XYZ"));
-    this.camera.position.set(0, s.lookY + s.dist * 0.1, s.dist);
-    this.camera.lookAt(0, s.lookY, 0);
-    this.standPieces();
-    // The projector's tick ring follows the globe round, slower.
-    this.projector.rotation.y = s.yaw * 0.25;
+    const drop = DROP * THREE.MathUtils.clamp((s.dist - R - 0.2) / 2.5, 0, 1);
+    this.earth.quaternion.setFromEuler(new THREE.Euler(s.pitch + drop, s.yaw, 0, "XYZ"));
+    this.camera.position.set(0, s.dist * 0.05, s.dist);
+    this.camera.lookAt(0, 0, 0);
+    // The sky turns a little with Earth, as if the camera went round it.
+    this.stars.rotation.set(s.pitch * 0.12, s.yaw * 0.12 + t * 0.004, 0);
+    const tu = this.stars.material.uniforms.time;
+    if (tu) tu.value = t;
+    const a = 2.2 + t * 0.035 + s.yaw * 0.12;
+    this.moon.position.set(MOON.center.x + Math.cos(a) * MOON.orbit, MOON.center.y + Math.sin(a) * 0.5, MOON.center.z + Math.sin(a) * MOON.orbit * 0.6);
+    this.moon.rotation.y = a;
+    this.pulses.forEach((p, i) => {
+      const k = this.reduced ? 0.55 : (t * 0.45 + i * 0.5) % 1;
+      p.scale.setScalar(0.012 + 0.07 * k);
+      p.material.opacity = this.reduced ? (i ? 0 : 0.6) : (1 - k) * 0.75;
+    });
+    this.standFlag();
     if (this.tokens.holo) this.postFx().composer.render();
     else this.renderer.render(this.scene, this.camera);
     this.onFrame?.();
   };
 
-  // Every piece stands up the way the screen does, and leans back toward the viewer only as
-  // far as it faces them, so the ones near the rim stay upright instead of lying sideways.
-  private standPieces() {
-    const toLocal = this.globe.quaternion.clone().invert();
+  // The flag stands up the way the screen does and leans back toward the viewer only as far
+  // as home faces them, so it reads near the rim too instead of lying flat.
+  private standFlag() {
+    const holder = this.flag.children[0];
+    if (!holder) return;
+    // Closer in, the flag shrinks with the distance, so it holds about its size on screen
+    // like a map marker, and it sinks into the roof at the end of a dive instead of filling it.
+    const k = THREE.MathUtils.smoothstep(this.shot.dist - R, 0.06, 1.6);
+    holder.scale.setScalar(((holder.userData.scale as number) ?? 1) * k);
+    holder.visible = k > 0.001;
+    const toLocal = this.earth.quaternion.clone().invert();
     const eye = this.camera.position.clone().normalize().applyQuaternion(toLocal);
     const sky = new THREE.Vector3(0, 1, 0).applyQuaternion(toLocal);
-    const basis = new THREE.Matrix4();
-    for (const d of this.devices.values()) {
-      const n = d.normal;
-      if (!d.holder || !n) continue;
-      const t = sky.clone().addScaledVector(n, -sky.dot(n));
-      // Facing straight up at the sky: fall back to the globe's own north.
-      if (t.lengthSq() < 1e-4) t.set(0, 1, 0).addScaledVector(n, -n.y);
-      t.normalize();
-      const east = new THREE.Vector3().crossVectors(t, n).normalize();
-      const lean = TILT * THREE.MathUtils.clamp(n.dot(eye), 0, 1);
-      const up = t.multiplyScalar(Math.cos(lean)).addScaledVector(n, Math.sin(lean));
-      const front = new THREE.Vector3().crossVectors(east, up).normalize();
-      d.holder.quaternion.setFromRotationMatrix(basis.makeBasis(east, up, front));
-    }
+    const n = this.homeAt;
+    const tan = sky.clone().addScaledVector(n, -sky.dot(n));
+    if (tan.lengthSq() < 1e-4) tan.set(0, 1, 0).addScaledVector(n, -n.y);
+    tan.normalize();
+    const east = new THREE.Vector3().crossVectors(tan, n).normalize();
+    const lean = TILT * THREE.MathUtils.clamp(n.dot(eye), 0, 1);
+    const upv = tan.multiplyScalar(Math.cos(lean)).addScaledVector(n, Math.sin(lean));
+    const front = new THREE.Vector3().crossVectors(east, upv).normalize();
+    holder.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(east, upv, front));
   }
 
   invalidate() {
@@ -749,53 +624,78 @@ export class GlobeScene {
   dispose() {
     this.disposed = true;
     cancelAnimationFrame(this.frame);
-    this.clearSheet();
     disposeTree(this.scene);
-    this.paperSurface.dispose();
-    this.holoSurface.dispose();
+    this.landTexture.dispose();
+    this.moonTexture.dispose();
     this.post?.composer.dispose();
     this.renderer.dispose();
   }
 }
 
-function vec(p: Projection, x: number, y: number, r: number): THREE.Vector3 {
-  const [a, b, c] = unit(p.lat(y), p.lon(x));
-  return new THREE.Vector3(a * r, b * r, c * r);
+// Fills the land, in whatever fillStyle is set, onto an equirectangular canvas.
+function fillLand(ctx: CanvasRenderingContext2D, polygons: Ring[][], w: number, h: number) {
+  ctx.beginPath();
+  for (const poly of polygons)
+    for (const ring of poly) {
+      const flat = unwrapRing(ring);
+      for (const off of [-360, 0, 360]) {
+        flat.forEach(([lon, lat], i) => {
+          const x = ((lon + off + 180) / 360) * w;
+          const y = ((90 - lat) / 180) * h;
+          if (i) ctx.lineTo(x, y);
+          else ctx.moveTo(x, y);
+        });
+        ctx.closePath();
+      }
+    }
+  ctx.fill("evenodd");
 }
 
-// A rectangle of the sheet as a curved patch of the sphere: SphereGeometry takes
-// phi = lon + 90° and theta = 90° - lat, so a lat/lon box is just a slice of it.
-function patchGeometry(p: Projection, r: { x: number; y: number; w: number; h: number }, radius: number, inset = 0): THREE.BufferGeometry {
-  const ix = Math.min(r.w, r.h) * inset;
-  const lon0 = p.lon(r.x + ix);
-  const lon1 = p.lon(r.x + r.w - ix);
-  const top = p.lat(r.y + ix);
-  const bottom = p.lat(r.y + r.h - ix);
-  const segs = Math.max(2, Math.ceil((lon1 - lon0) / 0.03));
-  const rows = Math.max(2, Math.ceil((top - bottom) / 0.03));
-  return new THREE.SphereGeometry(radius, segs, rows, lon0 + Math.PI / 2, lon1 - lon0, Math.PI / 2 - top, top - bottom);
+function paintLand(canvas: HTMLCanvasElement, polygons: Ring[][], sea: THREE.Color, land: THREE.Color) {
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  ctx.fillStyle = `#${sea.getHexString()}`;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = `#${land.getHexString()}`;
+  fillLand(ctx, polygons, canvas.width, canvas.height);
 }
 
-function outlinePoints(p: Projection, r: { x: number; y: number; w: number; h: number }, radius: number): THREE.Vector3[] {
-  const pts: [number, number][] = [];
-  const n = 24;
-  for (let i = 0; i <= n; i++) pts.push([r.x + (r.w * i) / n, r.y]);
-  for (let i = 1; i <= n; i++) pts.push([r.x + r.w, r.y + (r.h * i) / n]);
-  for (let i = 1; i <= n; i++) pts.push([r.x + r.w - (r.w * i) / n, r.y + r.h]);
-  for (let i = 1; i <= n; i++) pts.push([r.x, r.y + r.h - (r.h * i) / n]);
-  return pts.map(([x, y]) => vec(p, x, y, radius));
-}
-
-// The selected box's outline as a thin band, built from the outline points.
-function outlineRing(p: Projection, r: Place, radius: number): THREE.BufferGeometry {
-  const outer = outlinePoints(p, { x: r.x - 3, y: r.y - 3, w: r.w + 6, h: r.h + 6 }, radius);
-  const inner = outlinePoints(p, { x: r.x, y: r.y, w: r.w, h: r.h }, radius);
-  const pos: number[] = [];
-  for (let i = 0; i < outer.length - 1; i++) {
-    const [a, b, c, d] = [outer[i], outer[i + 1], inner[i], inner[i + 1]] as THREE.Vector3[];
-    if (!a || !b || !c || !d) continue;
-    pos.push(a.x, a.y, a.z, c.x, c.y, c.z, b.x, b.y, b.z, b.x, b.y, b.z, c.x, c.y, c.z, d.x, d.y, d.z);
+// A grey moon with a few craters, tinted by the theme in the shader.
+function moonPaper(): HTMLCanvasElement {
+  const c = document.createElement("canvas");
+  c.width = 256;
+  c.height = 128;
+  const ctx = c.getContext("2d");
+  if (!ctx) return c;
+  ctx.fillStyle = "#d8d8d8";
+  ctx.fillRect(0, 0, c.width, c.height);
+  // A fixed scatter, so the moon looks the same on every visit.
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
+  for (let i = 0; i < 46; i++) {
+    const r = 2 + rnd() * rnd() * 16;
+    ctx.fillStyle = `rgba(90, 90, 90, ${0.12 + rnd() * 0.22})`;
+    ctx.beginPath();
+    ctx.ellipse(rnd() * c.width, 12 + rnd() * (c.height - 24), r, r * 0.8, 0, 0, Math.PI * 2);
+    ctx.fill();
   }
+  return c;
+}
+
+// Coastlines as short segments just over the surface. A step across the antimeridian is the
+// data's seam, not a coast, so it is left out.
+function coastGeometry(polygons: Ring[][]): THREE.BufferGeometry {
+  const pos: number[] = [];
+  const r = R * 1.0015;
+  const at = ([lon, lat]: [number, number]) => unit((lat * Math.PI) / 180, (lon * Math.PI) / 180).map((v) => v * r);
+  for (const poly of polygons)
+    for (const ring of poly)
+      for (let i = 1; i < ring.length; i++) {
+        const a = ring[i - 1];
+        const b = ring[i];
+        if (!a || !b || Math.abs(a[0] - b[0]) > 180) continue;
+        pos.push(...at(a), ...at(b));
+      }
   const g = new THREE.BufferGeometry();
   g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
   return g;
@@ -825,10 +725,26 @@ function graticuleGeometry(): THREE.BufferGeometry {
   return g;
 }
 
-const rimVertex = /* glsl */ `
+// A mast with a pennant and a light on top, in the kit's material roles, for before it loads.
+function plainFlag(): THREE.Object3D {
+  const g = new THREE.Group();
+  const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.035, 0.9, 8), new THREE.MeshStandardMaterial({ name: "body" }));
+  mast.position.y = 0.45;
+  const pennant = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.5, 3), new THREE.MeshStandardMaterial({ name: "accent" }));
+  pennant.rotation.z = -Math.PI / 2;
+  pennant.position.set(0.27, 0.75, 0);
+  const led = new THREE.Mesh(new THREE.IcosahedronGeometry(0.06), new THREE.MeshStandardMaterial({ name: "led" }));
+  led.position.y = 0.95;
+  g.add(mast, pennant, led);
+  return g;
+}
+
+const viewVertex = /* glsl */ `
+  varying vec2 vUv;
   varying vec3 vNormal;
   varying vec3 vView;
   void main() {
+    vUv = uv;
     vec4 mv = modelViewMatrix * vec4(position, 1.0);
     vNormal = normalMatrix * normal;
     vView = -mv.xyz;
@@ -836,32 +752,50 @@ const rimVertex = /* glsl */ `
   }
 `;
 
-// The holo globe: dark where it faces you, brightening to the rim colour where it turns away.
-function rimMaterial(): THREE.ShaderMaterial {
+// Earth's and the moon's surface: the painted map, shaded from the upper left, brightening to
+// the rim colour where it turns away. tint multiplies the map, for the moon's grey.
+function surfaceMaterial(map: THREE.Texture): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
-    uniforms: { core: { value: new THREE.Color() }, rim: { value: new THREE.Color() }, power: { value: 3.2 } },
-    vertexShader: rimVertex,
+    uniforms: {
+      map: { value: map },
+      tint: { value: new THREE.Color(1, 1, 1) },
+      rim: { value: new THREE.Color() },
+      rimMix: { value: 0 },
+      power: { value: 3 },
+      shade: { value: 1 },
+      light: { value: new THREE.Vector3(-0.55, 0.6, 0.6).normalize() },
+    },
+    vertexShader: viewVertex,
     fragmentShader: /* glsl */ `
-      uniform vec3 core;
+      uniform sampler2D map;
+      uniform vec3 tint;
       uniform vec3 rim;
+      uniform float rimMix;
       uniform float power;
+      uniform float shade;
+      uniform vec3 light;
+      varying vec2 vUv;
       varying vec3 vNormal;
       varying vec3 vView;
       void main() {
-        float f = pow(1.0 - max(dot(normalize(vNormal), normalize(vView)), 0.0), power);
-        gl_FragColor = vec4(mix(core, rim, f), 1.0);
+        vec3 n = normalize(vNormal);
+        vec3 base = texture2D(map, vUv).rgb * tint;
+        float lam = max(dot(n, light), 0.0);
+        vec3 c = base * mix(1.0, 0.6 + 0.55 * lam, shade);
+        float f = pow(1.0 - max(dot(n, normalize(vView)), 0.0), power);
+        gl_FragColor = vec4(mix(c, rim, f * rimMix), 1.0);
         #include <colorspace_fragment>
       }
     `,
   });
 }
 
-// A glow just outside the globe, drawn on the back of a larger shell. inner is how far the
+// A glow just outside a globe, drawn on the back of a larger shell. inner is how far the
 // shell's back faces turn from the viewer where they meet the globe's outline.
 function haloMaterial(ratio: number): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
     uniforms: { rim: { value: new THREE.Color() }, inner: { value: Math.sqrt(1 - ratio * ratio) } },
-    vertexShader: rimVertex,
+    vertexShader: viewVertex,
     fragmentShader: /* glsl */ `
       uniform vec3 rim;
       uniform float inner;
@@ -869,7 +803,7 @@ function haloMaterial(ratio: number): THREE.ShaderMaterial {
       varying vec3 vView;
       void main() {
         float k = -dot(normalize(vNormal), normalize(vView));
-        float g = pow(clamp(k / inner, 0.0, 1.0), 4.0) * 0.28;
+        float g = pow(clamp(k / inner, 0.0, 1.0), 4.0) * 0.24;
         gl_FragColor = vec4(rim, g);
       }
     `,
@@ -880,67 +814,102 @@ function haloMaterial(ratio: number): THREE.ShaderMaterial {
   });
 }
 
-// The holo globe's stand: rings of light on the floor, a tick ring that turns, and a faint
-// beam rising to the globe. Coloured from the accent in applyColors.
-function projectorBase(): THREE.Group {
-  const g = new THREE.Group();
-  const glow = (opacity: number) => new THREE.MeshBasicMaterial({ transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
-  for (const [inner, outer, opacity] of [
-    [0.5, 0.515, 0.55],
-    [0.74, 0.748, 0.3],
-    [0.98, 0.985, 0.22],
-  ] as const) {
-    const ring = new THREE.Mesh(new THREE.RingGeometry(inner, outer, 128), glow(opacity));
-    ring.rotation.x = -Math.PI / 2;
-    g.add(ring);
+// Land dots: round, sized in world units so they shrink with distance, and warmer and
+// brighter near home.
+function dotMaterial(home: THREE.Vector3): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: { color: { value: new THREE.Color() }, hot: { value: new THREE.Color() }, home: { value: home.clone() }, size: { value: 0.0085 }, scale: { value: 600 }, cap: { value: 14 } },
+    vertexShader: /* glsl */ `
+      uniform vec3 home;
+      uniform float size;
+      uniform float scale;
+      uniform float cap;
+      varying float vHeat;
+      void main() {
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vHeat = 1.0 - smoothstep(0.0, 0.22, distance(normalize(position), home));
+        // Capped, so close to the ground the dots open into a grid instead of merging into blobs.
+        gl_PointSize = clamp(size * scale / -mv.z, 1.0, cap);
+        gl_Position = projectionMatrix * mv;
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      uniform vec3 color;
+      uniform vec3 hot;
+      varying float vHeat;
+      void main() {
+        float a = 1.0 - smoothstep(0.32, 0.5, length(gl_PointCoord - 0.5));
+        gl_FragColor = vec4(mix(color, hot, vHeat), a * (0.55 + 0.45 * vHeat));
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+}
+
+// The sky: a few thousand stars on a far sphere, most faint and a few bright, each with its
+// own slow twinkle.
+function starField(n: number): THREE.Points<THREE.BufferGeometry, THREE.ShaderMaterial> {
+  let seed = 11;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
+  const pos: number[] = [];
+  const size: number[] = [];
+  const bright: number[] = [];
+  const phase: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const y = rnd() * 2 - 1;
+    const a = rnd() * Math.PI * 2;
+    const r = 160 + rnd() * 120;
+    const s = Math.sqrt(1 - y * y);
+    pos.push(Math.cos(a) * s * r, y * r, Math.sin(a) * s * r);
+    const b = Math.pow(rnd(), 3);
+    size.push(1.2 + b * 2.8);
+    bright.push(0.25 + b * 0.75);
+    phase.push(rnd() * Math.PI * 2);
   }
-  const disc = new THREE.Mesh(new THREE.CircleGeometry(0.5, 96), glow(0.025));
-  disc.rotation.x = -Math.PI / 2;
-  g.add(disc);
-  const ticks: number[] = [];
-  for (let i = 0; i < 120; i++) {
-    const a = (i / 120) * Math.PI * 2;
-    const long = i % 10 === 0;
-    const [r0, r1] = [1.06, long ? 1.16 : 1.1];
-    ticks.push(Math.cos(a) * r0, 0, Math.sin(a) * r0, Math.cos(a) * r1, 0, Math.sin(a) * r1);
-  }
-  const tickGeo = new THREE.BufferGeometry();
-  tickGeo.setAttribute("position", new THREE.Float32BufferAttribute(ticks, 3));
-  g.add(new THREE.LineSegments(tickGeo, new THREE.LineBasicMaterial({ transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false })));
-  // The beam fades as it rises, from the inner ring up to where the globe is as wide.
-  const height = -0.35 - BASE_Y;
-  const beam = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.93, 0.5, height, 96, 1, true),
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute("size", new THREE.Float32BufferAttribute(size, 1));
+  g.setAttribute("bright", new THREE.Float32BufferAttribute(bright, 1));
+  g.setAttribute("phase", new THREE.Float32BufferAttribute(phase, 1));
+  const points = new THREE.Points(
+    g,
     new THREE.ShaderMaterial({
-      uniforms: { color: { value: new THREE.Color() } },
+      uniforms: { color: { value: new THREE.Color() }, opacity: { value: 1 }, scale: { value: 1 }, time: { value: 0 } },
       vertexShader: /* glsl */ `
-        varying float vUp;
+        attribute float size;
+        attribute float bright;
+        attribute float phase;
+        uniform float scale;
+        uniform float time;
+        varying float vBright;
         void main() {
-          vUp = uv.y;
+          vBright = bright * (0.75 + 0.25 * sin(time * (0.6 + phase * 0.3) + phase));
+          gl_PointSize = size * scale;
           gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         }
       `,
       fragmentShader: /* glsl */ `
         uniform vec3 color;
-        varying float vUp;
+        uniform float opacity;
+        varying float vBright;
         void main() {
-          gl_FragColor = vec4(color, pow(1.0 - vUp, 2.2) * 0.07);
+          float a = 1.0 - smoothstep(0.1, 0.5, length(gl_PointCoord - 0.5));
+          gl_FragColor = vec4(color, a * vBright * opacity);
         }
       `,
-      side: THREE.DoubleSide,
-      blending: THREE.AdditiveBlending,
       transparent: true,
       depthWrite: false,
     }),
   );
-  beam.position.y = height / 2;
-  g.add(beam);
-  return g;
+  points.raycast = () => undefined;
+  return points;
 }
 
 function disposeTree(o: THREE.Object3D) {
   o.traverse((x) => {
-    if (x instanceof THREE.Mesh || x instanceof THREE.LineSegments || x instanceof Line2) {
+    if (x instanceof THREE.Mesh || x instanceof THREE.LineSegments || x instanceof THREE.Points) {
       x.geometry.dispose();
       const m = x.material as THREE.Material | THREE.Material[];
       for (const mat of Array.isArray(m) ? m : [m]) mat.dispose();

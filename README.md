@@ -22,21 +22,27 @@ bun run check    # typecheck, lint, tests, build
 
 Keys: `1` to `9` switch sheets, `/` or Cmd-K opens search (names, IPs, MACs, container names), `Esc` backs out one level, `F` fits the drawing back to the view. Every view has its own URL, such as `#/ingress/@s-photos`, and browser back walks the drill history.
 
-The theme menu in the top bar picks the look. Holo, the default, is dark navy with cyan light: the globe gets a lit rim, bloom, edge-lit pieces and a projector under it, and turns by itself when left alone on the overview (not with reduced motion on). System follows the OS between Light and Dark, the printed-map look of the screenshot at the top. The choice is kept in the browser.
+The theme menu in the top bar picks the look. Holo, the default, is dark navy with cyan light: the globe gets a lit rim, bloom, land drawn in points of light and an edge-lit flag, and its stars twinkle and its moon goes round (not with reduced motion on). System follows the OS between Light and Dark, the printed-map look of the screenshot at the top. The choice is kept in the browser.
 
 Right-click (long-press on a phone, Shift-F10 on a focused box) opens a menu built for what is under the pointer. A box gets copy actions for its IP, MAC, tailnet IP, ssh command and link, its own web UIs, its Grafana and Prometheus pages, and the other sheets that draw it. When something is wrong the fix leads the menu: a host that stopped reporting opens its Grafana page, a failing probe opens its history, a satellite on wireless backhaul jumps to the MoCA adapter on its wired path.
 
 ## The globe
 
-The last sheet is the house on a globe. It wraps one flat sheet onto the sphere: rooms become curved patches, boxes become small device pieces standing on them, and cables run along the surface. Drag to turn the globe, scroll or pinch to zoom. Picking a box turns it round to the front and lights its route, as on the flat sheet, and the names over the globe are buttons, so Tab walks them and brings a name on the far side round. Cable labels sit on their cables. Where names would overlap, the selected box wins, then rooms, then whatever faces you most; the rest fade until you turn or zoom.
+The last sheet starts in space. It flies in from among the stars to Earth, turned so the house faces you, with a flag planted on home and a Home pin over it. Drag to turn Earth, scroll or pinch to zoom, and `F` turns home back to the front. Picking Home, or zooming in with home in front, dives down onto the roof and opens the house: one of the flat sheets, drawn as it is on its own tab, at `#/globe/home`. Rooms and boxes in there work as on any sheet (`#/globe/home/living/@nas`), and Esc climbs back out one level at a time, the last step up out of the house to Earth.
 
-<img alt="The example house's wiring wrapped onto a glowing cyan globe that stands on rings of light, with edge-lit device pieces and coloured cables on it" src="docs/globe-holo.png">
+<img alt="Earth in space under the holo theme, its land in cyan points of light, turned to show Europe and Africa, with a flag and a Home pin on Lisbon and the moon off to one side" src="docs/globe-holo.png">
 
-It copies the first sheet with rooms on it. Set `globe: { from: "ingress" }` in the site to wrap another, or `globe: false` to leave it out. It takes the next free number key.
+Tell it where the house stands, in degrees with west and south negative. A city is close enough; the pin names it.
 
-three.js loads only when the globe sheet opens. A browser without WebGL gets a note instead, and the flat sheets keep working.
+```ts
+globe: { home: { lat: 38.72, lon: -9.14, label: "Lisbon" } },
+```
 
-The device pieces were modelled for this repo in Blender, from the scripts in `models/recipes/`, and live in `src/assets/models/` as GLB files. No outside models are used. Each piece is named by its `kind`, and its materials are named by role (`body`, `trim`, `accent`, `led`, `screen`) so the globe repaints them from the theme. The `led` takes the box's live state. A kind with no piece falls back to a plain block. To rebuild one, run its recipe as a Blender script job; it writes the GLB to `OUT_DIR`.
+The house opens on the first sheet with rooms. Set `from: "ingress"` beside `home` to open another, or `globe: false` to leave the sheet out. It takes the next free number key.
+
+The land is Natural Earth's 1:110m outline (public domain), by way of the `world-atlas` package. three.js and the land data load only when the globe sheet opens. A browser without WebGL gets a note and a button into the house instead, and the flat sheets keep working.
+
+The flag was modelled for this repo in Blender, from `models/recipes/kit_world.py`, and lives in `src/assets/models/kit-world.glb`. No outside models are used. Its materials are named by role (`body`, `trim`, `accent`, `led`) so the globe repaints them from the theme, and a plain mast stands in until it loads. To rebuild it, run the recipe as a Blender script job; it writes the GLB to `OUT_DIR`.
 
 ## Your own house
 
