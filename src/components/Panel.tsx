@@ -121,7 +121,7 @@ function LiveBlock({ e }: { e: Entity }) {
             <span className="k">Load 1m</span>
             <span className="v">{h.load.toFixed(2)}</span>
             <span className="bar">
-              <i style={{ width: `${Math.min(h.load * 12.5, 100)}%` }} />
+              <i style={{ transform: `scaleX(${Math.min(h.load / 8, 1)})` }} />
             </span>
           </div>
         )}
