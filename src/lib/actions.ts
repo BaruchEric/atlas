@@ -15,11 +15,14 @@ interface Base {
   tone?: "bad";
 }
 
+// act is something the server does to the box through the site's actions command: switch a
+// plug, restart a container, reboot a host. One with confirm is asked about first.
 export type Action =
   | (Base & { do: "go"; view: View })
   | (Base & { do: "open"; href: string })
   | (Base & { do: "copy"; text: string })
-  | (Base & { do: "run"; command: Command });
+  | (Base & { do: "run"; command: Command })
+  | (Base & { do: "act"; entity: string; action: string; confirm?: string });
 
 export interface Menu {
   title: string;
@@ -43,6 +46,24 @@ const dash = (uid: string | undefined, query = "") => (grafana && uid ? `${grafa
 const promQuery = (q: string) => (site.prometheus ? `${site.prometheus}/query?g0.expr=${encodeURIComponent(q)}&g0.tab=graph&g0.range_input=6h` : undefined);
 const reach = (href: string) => (/^https?:\/\/192\.168\./.test(href) ? "LAN" : /^https?:\/\/100\./.test(href) ? "tailnet" : undefined);
 const inside = (outer: { x: number; y: number; w: number; h: number }, p: Place) => p.x >= outer.x && p.y >= outer.y && p.x + p.w <= outer.x + outer.w && p.y + p.h <= outer.y + outer.h;
+
+// An entity's ssh command as a link a terminal app opens: "ssh -p 2222 eric@mini" becomes
+// ssh://eric@mini:2222. A command with flags this doesn't know gives nothing.
+export function sshUrl(command: string): string | undefined {
+  const words = command.trim().split(/\s+/);
+  if (words.shift() !== "ssh") return undefined;
+  let port: string | undefined;
+  let target: string | undefined;
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i] ?? "";
+    if (w === "-p") port = words[++i];
+    else if (w.startsWith("-")) return undefined;
+    else if (target) return undefined;
+    else target = w;
+  }
+  if (!target || (port !== undefined && !(/^\d{1,5}$/.test(port) && Number(port) >= 1 && Number(port) <= 65535))) return undefined;
+  return `ssh://${target}${port ? `:${port}` : ""}`;
+}
 
 // Red now: a live probe or exporter failing, or drawn as broken in the static data.
 function isDown(e: Entity, live: Live): boolean {
@@ -75,7 +96,7 @@ function dedupe(sections: Action[][]): Action[][] {
   return sections
     .map((s) =>
       s.filter((a) => {
-        const key = a.do === "open" ? a.href : a.do === "copy" ? `copy:${a.text}` : a.do === "go" ? `go:${formatHash(a.view)}` : `run:${a.command}`;
+        const key = a.do === "open" ? a.href : a.do === "copy" ? `copy:${a.text}` : a.do === "go" ? `go:${formatHash(a.view)}` : a.do === "act" ? `act:${a.entity}/${a.action}` : `run:${a.command}`;
         if (seen.has(key)) return false;
         seen.add(key);
         return true;
@@ -110,6 +131,10 @@ function nodeMenu(e: Entity, { lens, view, live, base }: MenuContext): Menu {
     if (targets) trouble.push({ do: "open", tone: "bad", label: "Targets down: which ones", href: targets, hint: "tailnet" });
   }
 
+  // What the server can do to this box right now, as its actions command last listed it.
+  const acts = live.acts.state === "live" ? (live.acts.entities[e.id]?.actions ?? []) : [];
+  const control: Action[] = acts.map((a) => ({ do: "act", label: a.label, tone: a.tone, entity: e.id, action: a.id, confirm: a.confirm }));
+
   const nav: Action[] = [];
   if (here) {
     const origin = lens.origin && lens.origin !== e.id ? entities[lens.origin] : undefined;
@@ -129,6 +154,9 @@ function nodeMenu(e: Entity, { lens, view, live, base }: MenuContext): Menu {
   const open: Action[] = [];
   if (e.kind === "site") open.push({ do: "open", label: `Open ${e.label}`, href: `https://${e.label}/` });
   for (const [label, href] of e.links ?? []) open.push({ do: "open", label: `Open ${label}`, href, hint: reach(href) });
+  // Terminal apps register ssh:, so this opens a shell on the box from a Mac or a phone.
+  const terminal = e.ssh ? sshUrl(e.ssh) : undefined;
+  if (terminal) open.push({ do: "open", label: "Open a terminal", href: terminal, hint: terminal.replace(/^ssh:\/\//, "") });
   if (hostDetail) open.push({ do: "open", label: "Host detail in Grafana", href: hostDetail });
   const cadvisorHost = grafana?.cadvisorHost ?? {};
   const containersOf = k?.cadvisor ? cadvisorHost[k.cadvisor] : host?.ip ? cadvisorHost[host.ip] : undefined;
@@ -153,7 +181,7 @@ function nodeMenu(e: Entity, { lens, view, live, base }: MenuContext): Menu {
   const home = here ? lens : lenses.find((x) => x.places[e.id]);
   copy.push({ do: "copy", label: "Copy link to this box", text: base + formatHash({ lens: home?.id ?? lens.id, node: e.id }) });
 
-  return { title: e.label, sub: l.text ?? e.sub, pulse: l.pulse, sections: dedupe([trouble, nav, open, copy]) };
+  return { title: e.label, sub: l.text ?? e.sub, pulse: l.pulse, sections: dedupe([trouble, control, nav, open, copy]) };
 }
 
 function zoneMenu(zoneId: string, { lens, view, live, base }: MenuContext): Menu | null {

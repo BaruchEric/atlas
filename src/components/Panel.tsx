@@ -4,6 +4,7 @@ import { entities, lenses, network, site } from "@/data/site";
 import type { Entity, Kind, Lens, Net, Status } from "@/data/types";
 import type { Target } from "@/lib/actions";
 import { routeFrom, routeLens } from "@/lib/geometry";
+import type { ActCall } from "@/live/acts";
 import { liveFor, useLive, useSeries } from "@/live/prom";
 
 const kindName: Record<Kind, string> = {
@@ -147,9 +148,47 @@ interface Nav {
   onZone: (id: string | null) => void;
   onLens: (lens: string, node?: string) => void;
   onMenu: (t: Target, x: number, y: number) => void;
+  // Runs one of the server's actions on a box; settles when the server has answered.
+  onAct: (a: ActCall) => Promise<void>;
 }
 
-function NodeDetail({ e, lens, onSelect, onLens }: Nav & { e: Entity }) {
+// What the server's actions command offers for this box. An action that asks first turns
+// into its question on the first press and runs on the second; a press elsewhere cancels.
+function ActionsBlock({ e, onAct }: { e: Entity; onAct: (a: ActCall) => Promise<void> }) {
+  const acts = useLive().acts;
+  const [asking, setAsking] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const offered = acts.state === "live" ? acts.entities[e.id] : undefined;
+  if (!offered?.actions.length) return null;
+  const press = async (id: string, label: string, confirm?: string) => {
+    if (confirm && asking !== id) return setAsking(id);
+    setAsking(null);
+    setBusy(id);
+    try {
+      await onAct({ entity: e.id, action: id, label });
+    } finally {
+      setBusy(null);
+    }
+  };
+  return (
+    <section>
+      <h3>Actions{offered.text ? ` · ${offered.text}` : offered.state ? ` · ${offered.state.replace(/_/g, " ")}` : ""}</h3>
+      <div className="acts" onBlur={(ev) => !ev.currentTarget.contains(ev.relatedTarget) && setAsking(null)}>
+        {offered.actions.map((a) => {
+          const asked = !!a.confirm && asking === a.id;
+          return (
+            <button key={a.id} type="button" className={`act${a.tone ? ` ${a.tone}` : ""}${asked ? " asking" : ""}`} disabled={busy !== null} aria-busy={busy === a.id} onClick={() => void press(a.id, a.label, a.confirm)}>
+              {busy === a.id ? `${a.label}…` : asked ? a.confirm : a.label}
+              {asked && <small>again to do it</small>}
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function NodeDetail({ e, lens, onSelect, onLens, onAct }: Nav & { e: Entity }) {
   const live = useLive();
   const l = liveFor(e, live);
   const routed = routeLens(lens);
@@ -179,6 +218,7 @@ function NodeDetail({ e, lens, onSelect, onLens }: Nav & { e: Entity }) {
         {(here?.sub ?? e.sub) && <p className="lede mono">{here?.sub ?? e.sub}</p>}
         {!here && <p className="lede">Not drawn on this sheet.</p>}
       </div>
+      <ActionsBlock e={e} onAct={onAct} />
       <LiveBlock e={e} />
       {facts.length > 0 && (
         <dl className="facts">

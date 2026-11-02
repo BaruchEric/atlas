@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# The example house's actions command, behind /act (see "Actions" in the README). "list"
+# prints what each box offers and its state; "run <box> <action>" does one thing. Here the
+# Den TV is a pretend switch that remembers its state in a file, and the mini PC's reboot
+# only says it would have. A real house points server.json at a script that talks to its
+# plugs, hosts and containers.
+set -euo pipefail
+STATE=${ATLAS_EXAMPLE_STATE:-${TMPDIR:-/tmp}/atlas-example-tv}
+tv=off
+[ ! -f "$STATE" ] || [ "$(cat "$STATE")" != on ] || tv=on
+
+cmd=${1:-list}
+if [ "$cmd" = list ]; then
+  if [ "$tv" = on ]; then
+    tv_action='{ "id": "off", "label": "Turn off" }'
+  else
+    tv_action='{ "id": "on", "label": "Turn on" }'
+  fi
+  cat <<EOF
+{
+  "tv": { "state": "$tv", "actions": [ $tv_action ] },
+  "mini": { "actions": [ { "id": "reboot", "label": "Reboot", "confirm": "Reboot the mini PC? Prometheus and the tunnel go with it.", "tone": "bad" } ] }
+}
+EOF
+  exit 0
+fi
+
+if [ "$cmd" = run ]; then
+  case "${2:-}/${3:-}" in
+    tv/on)
+      echo on >"$STATE"
+      echo '{ "ok": true, "text": "The Den TV is on" }'
+      ;;
+    tv/off)
+      echo off >"$STATE"
+      echo '{ "ok": true, "text": "The Den TV is off" }'
+      ;;
+    mini/reboot)
+      echo '{ "ok": true, "text": "The example mini PC would reboot now" }'
+      ;;
+    *)
+      echo '{ "ok": false, "error": "no such action" }'
+      exit 1
+      ;;
+  esac
+  exit 0
+fi
+
+echo "usage: actions list | run <entity> <action>" >&2
+exit 2

@@ -10,6 +10,7 @@ import type { Command, Target } from "@/lib/actions";
 import { formatHash, parseHash, settle, up, type View } from "@/lib/hashState";
 import { useMedia } from "@/lib/useMedia";
 import { roam, roamSpots } from "@/lib/roam";
+import { runAct, useActsFeed, type ActCall } from "@/live/acts";
 import { useOrbiFeed } from "@/live/orbi";
 import { LiveContext, useLiveFeed } from "@/live/prom";
 
@@ -19,7 +20,8 @@ const GlobeCanvas = lazy(() => import("@/components/GlobeCanvas").then((m) => ({
 export function App() {
   const prom = useLiveFeed();
   const orbi = useOrbiFeed();
-  const live = useMemo(() => ({ ...prom, orbi }), [prom, orbi]);
+  const [acts, refreshActs] = useActsFeed();
+  const live = useMemo(() => ({ ...prom, orbi, acts }), [prom, orbi, acts]);
   // The view, and the one before it, which tells the globe sheet which way it is travelling.
   const [nav, setNav] = useState<{ view: View; from?: View }>(() => ({ view: parseHash(location.hash) }));
   const view = nav.view;
@@ -73,6 +75,17 @@ export function App() {
   const openMenu = useCallback((target: Target, x: number, y: number) => setMenu({ target, x, y }), []);
   const closeMenu = useCallback(() => setMenu(null), []);
   const showToast = useCallback((text: string) => setToast((t) => ({ text, n: (t?.n ?? 0) + 1 })), []);
+  // Run one of the server's actions on a box, say how it went, and re-read the states.
+  const doAct = useCallback(
+    async ({ entity, action, label }: ActCall) => {
+      const name = entities[entity]?.label ?? entity;
+      showToast(`${label} · ${name}…`);
+      const r = await runAct(entity, action);
+      showToast(r.ok ? (r.text ?? `${label} · ${name}: done`) : `${label} · ${name} failed: ${r.error}`);
+      refreshActs();
+    },
+    [showToast, refreshActs],
+  );
   // A menu pick that selects or drills in also raises the phone's bottom sheet, as a click does.
   const menuGo = useCallback(
     (v: View) => {
@@ -191,7 +204,7 @@ export function App() {
               <div className="hint">{globe && !view.home ? "Drag to turn Earth · pick Home to go inside" : "Click a box or a room to drill in · right-click for actions"} · 1–{lenses.length} switch sheets · / to find{view.home || !globe ? " · Esc to back out" : ""}</div>
             )}
           </div>
-          <Panel lens={lens} zone={view.zone} node={view.node} sheet={sheet} peek={peek} onTogglePeek={() => setPeek((p) => !p)} onSelect={select} onZone={toZone} onLens={toLens} onMenu={openMenu} />
+          <Panel lens={lens} zone={view.zone} node={view.node} sheet={sheet} peek={peek} onTogglePeek={() => setPeek((p) => !p)} onSelect={select} onZone={toZone} onLens={toLens} onMenu={openMenu} onAct={doAct} />
         </div>
         <AnimatePresence>
           {searching && (
@@ -204,7 +217,7 @@ export function App() {
             />
           )}
         </AnimatePresence>
-        {menu && <ContextMenu at={menu} lens={lens} view={view} reduced={reduced} onGo={menuGo} onCommand={command} onToast={showToast} onReopen={setMenu} onClose={closeMenu} />}
+        {menu && <ContextMenu at={menu} lens={lens} view={view} reduced={reduced} onGo={menuGo} onCommand={command} onAct={doAct} onToast={showToast} onReopen={setMenu} onClose={closeMenu} />}
         <div className="toast-wrap" role="status" aria-live="polite">
           <AnimatePresence>
             {toast && (

@@ -1,6 +1,7 @@
 import { fileURLToPath, URL } from "node:url";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
+import { actPlugin } from "./server/act.ts";
 import { orbiPlugin } from "./server/orbi.ts";
 import { serverConfig, siteDir } from "./server/site.ts";
 
@@ -20,7 +21,7 @@ const proxy = prometheus
   : undefined;
 
 export default defineConfig({
-  plugins: [react(), orbiPlugin()],
+  plugins: [react(), orbiPlugin(), actPlugin()],
   resolve: {
     alias: [
       { find: /^@site$/, replacement: `${siteDir}/index.ts` },

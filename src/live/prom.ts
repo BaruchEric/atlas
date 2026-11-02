@@ -3,6 +3,7 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { entities, site } from "@/data/site";
 import type { Entity } from "@/data/types";
+import { emptyActs, type Acts } from "@/live/acts";
 import { emptyOrbi, type Orbi } from "@/live/orbi";
 
 export interface HostLive {
@@ -25,6 +26,8 @@ export interface Live {
   // its IPP or eSCL state and the text on its front panel.
   devices: Record<string, { says?: string; display?: string }>;
   orbi: Orbi;
+  // What the server's actions command says about each box: its state and what can be done to it.
+  acts: Acts;
 }
 
 interface Sample {
@@ -32,7 +35,7 @@ interface Sample {
   value: [number, string];
 }
 
-const empty: Live = { state: "loading", hosts: {}, containers: {}, probes: {}, jobs: {}, devices: {}, orbi: emptyOrbi };
+const empty: Live = { state: "loading", hosts: {}, containers: {}, probes: {}, jobs: {}, devices: {}, orbi: emptyOrbi, acts: emptyActs };
 const POLL_MS = 15_000;
 
 async function query(q: string, signal: AbortSignal): Promise<Sample[]> {
@@ -58,7 +61,7 @@ async function snapshot(signal: AbortSignal): Promise<Live> {
     query('{__name__=~"speedtest_(download_bits_per_second|upload_bits_per_second|latency_seconds|last_success_timestamp_seconds)"}', signal),
     query('{__name__=~"lan_device_(ipp_state|escl_state|display)"}', signal),
   ]);
-  const live: Live = { state: "live", at: Date.now(), hosts: {}, containers: {}, probes: {}, jobs: {}, devices: {}, orbi: emptyOrbi };
+  const live: Live = { state: "live", at: Date.now(), hosts: {}, containers: {}, probes: {}, jobs: {}, devices: {}, orbi: emptyOrbi, acts: emptyActs };
   for (const s of up) {
     const job = s.metric.job ?? "?";
     const j = (live.jobs[job] ??= { up: 0, total: 0 });
@@ -194,8 +197,13 @@ function fromProm(k: NonNullable<Entity["live"]>, live: Live): EntityLive {
 // nothing is shown from a feed that isn't live.
 export function liveFor(e: Entity, live: Live): EntityLive {
   const out: EntityLive = e.live && live.state === "live" ? fromProm(e.live, live) : { pulse: "none" };
-  const o = live.orbi;
-  if (o.state !== "live" || !e.mac) return out;
+  addOrbi(e, live.orbi, out);
+  addActs(e, live.acts, out);
+  return out;
+}
+
+function addOrbi(e: Entity, o: Orbi, out: EntityLive): void {
+  if (o.state !== "live" || !e.mac) return;
   const ap = o.aps[e.mac];
   const isAp = e.kind === "router" || e.kind === "satellite";
   if (isAp) {
@@ -209,7 +217,7 @@ export function liveFor(e: Entity, live: Live): EntityLive {
       out.pulse = ok ? "up" : "down";
       out.text = e.kind === "router" ? "router" : `${backhaul ?? "unknown"} backhaul`;
     }
-    return out;
+    return;
   }
   const c = o.clients[e.mac];
   if (c) {
@@ -223,7 +231,25 @@ export function liveFor(e: Entity, live: Live): EntityLive {
     // address drop off it while still up, so absence leaves the dot alone.
     out.seen = "not in the Orbi's client list right now";
   }
-  return out;
+}
+
+// States the actions command reports that mean a box is doing its job, and ones that mean it
+// is switched off on purpose. Anything else (unavailable, say) is shown as words only.
+const ON_STATES = new Set(["on", "locked", "running", "playing", "open", "heat", "cool", "auto", "heat_cool"]);
+const OFF_STATES = new Set(["off", "stopped", "exited", "idle", "paused", "standby", "closed", "down"]);
+
+// What the actions command knows about a box, added after Prometheus and the Orbi: its state
+// drives the dot only when neither of them had a say, since a plug switched off is not down.
+function addActs(e: Entity, acts: Acts, out: EntityLive): void {
+  if (acts.state !== "live") return;
+  const a = acts.entities[e.id];
+  if (!a) return;
+  if (out.pulse === "none" && a.state) {
+    if (ON_STATES.has(a.state)) out.pulse = "up";
+    else if (OFF_STATES.has(a.state)) out.pulse = "off";
+  }
+  const text = a.text ?? a.state?.replace(/_/g, " ");
+  if (text) out.text = out.text ? `${out.text} · ${text}` : text;
 }
 
 export interface Series {

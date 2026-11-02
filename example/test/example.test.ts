@@ -1,12 +1,16 @@
 // Pins the example house's own boxes, so it skips when a real site is linked in.
 import { describe, expect, test } from "bun:test";
+import { rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { entities, lensById, site } from "@/data/site";
 import { menuFor, type Action, type Menu, type MenuContext } from "@/lib/actions";
 import { roam, roamSpots } from "@/lib/roam";
+import { emptyActs } from "@/live/acts";
 import { emptyOrbi, type Orbi } from "@/live/orbi";
 import type { Live } from "@/live/prom";
+import { parseActs } from "../../server/act.ts";
 
-const quiet: Live = { state: "loading", hosts: {}, containers: {}, probes: {}, jobs: {}, devices: {}, orbi: emptyOrbi };
+const quiet: Live = { state: "loading", hosts: {}, containers: {}, probes: {}, jobs: {}, devices: {}, orbi: emptyOrbi, acts: emptyActs };
 const ctx = (lens: string, extra: Partial<MenuContext> = {}): MenuContext => ({ lens: lensById[lens]!, view: { lens }, live: quiet, base: "https://atlas.example.com/", ...extra });
 const all = (m: Menu | null): Action[] => m?.sections.flat() ?? [];
 const find = (m: Menu | null, label: string) => all(m).find((a) => a.label === label);
@@ -65,5 +69,28 @@ describe.skipIf(site.id !== "example")("the example house", () => {
     const m = menuFor({ kind: "zone", id: "living" }, ctx("wiring"));
     expect(m?.sections[0]?.[0]).toMatchObject({ label: "Drill in", view: { lens: "wiring", zone: "living" } });
     expect((find(m, "Copy addresses in here") as { text: string }).text).toContain("192.168.50.10\tNAS");
+  });
+
+  test("the example actions command switches the Den TV and remembers it", () => {
+    const state = `${tmpdir()}/atlas-example-test-${process.pid}`;
+    const actions = (...args: string[]) => {
+      const run = Bun.spawnSync(["bash", "example/actions", ...args], { env: { ...process.env, ATLAS_EXAMPLE_STATE: state } });
+      return { code: run.exitCode, out: JSON.parse(run.stdout.toString()) as unknown };
+    };
+    try {
+      expect(parseActs(actions("list").out).tv).toEqual({ state: "off", actions: [{ id: "on", label: "Turn on" }] });
+      expect(actions("run", "tv", "on")).toEqual({ code: 0, out: { ok: true, text: "The Den TV is on" } });
+      const listed = parseActs(actions("list").out);
+      expect(listed.tv).toEqual({ state: "on", actions: [{ id: "off", label: "Turn off" }] });
+      expect(listed.mini?.actions[0]).toMatchObject({ id: "reboot", confirm: expect.stringContaining("Reboot the mini PC?"), tone: "bad" });
+      expect(actions("run", "tv", "sideways")).toMatchObject({ code: 1, out: { ok: false } });
+      // What the menu then offers for the TV on the wiring sheet.
+      const live: Live = { ...quiet, acts: { state: "live", at: 1, entities: listed } };
+      const m = menuFor({ kind: "node", id: "tv" }, ctx("wiring", { live }));
+      expect(m?.sub).toBe("on");
+      expect(find(m, "Turn off")).toMatchObject({ do: "act", entity: "tv", action: "off" });
+    } finally {
+      rmSync(state, { force: true });
+    }
   });
 });

@@ -1,8 +1,9 @@
 import { motion } from "motion/react";
-import { useEffect, useLayoutEffect, useMemo, useRef, type KeyboardEvent, type MouseEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import type { Lens } from "@/data/types";
 import { menuFor, targetAt, type Action, type Command, type Target } from "@/lib/actions";
 import type { View } from "@/lib/hashState";
+import type { ActCall } from "@/live/acts";
 import { useLive } from "@/live/prom";
 
 export interface MenuAt {
@@ -18,12 +19,13 @@ interface Props {
   reduced: boolean;
   onGo: (v: View) => void;
   onCommand: (c: Command, x: number, y: number) => void;
+  onAct: (a: ActCall) => void;
   onToast: (text: string) => void;
   onReopen: (at: MenuAt) => void;
   onClose: () => void;
 }
 
-const glyph: Record<Action["do"], string> = { go: "→", open: "↗", copy: "⧉", run: "·" };
+const glyph: Record<Action["do"], string> = { go: "→", open: "↗", copy: "⧉", run: "·", act: "▸" };
 const runGlyph: Record<Command, string> = { fit: "⤢", zoom: "+", search: "⌕", back: "←" };
 
 async function copyText(text: string): Promise<boolean> {
@@ -44,10 +46,13 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
-export function ContextMenu({ at, lens, view, reduced, onGo, onCommand, onToast, onReopen, onClose }: Props) {
+export function ContextMenu({ at, lens, view, reduced, onGo, onCommand, onAct, onToast, onReopen, onClose }: Props) {
   const live = useLive();
   const menu = useMemo(() => menuFor(at.target, { lens, view, live, base: location.origin + location.pathname }), [at.target, lens, view, live]);
   const ref = useRef<HTMLDivElement>(null);
+  // An action that asks first: the first pick turns its row into the question, the second runs it.
+  const [asking, setAsking] = useState<string | null>(null);
+  const actKey = (a: Action & { do: "act" }) => `${a.entity}/${a.action}`;
   // A long press opens the menu with the finger still down, and the browser sends that
   // finger's release as a click to whatever ends up under it. Only a press that starts on
   // the menu or its scrim counts; keyboard clicks (detail 0) always do.
@@ -74,7 +79,7 @@ export function ContextMenu({ at, lens, view, reduced, onGo, onCommand, onToast,
     el.style.maxHeight = `${down ? below : above}px`;
     el.style.left = `${Math.max(m, Math.min(at.x, innerWidth - width - m))}px`;
     el.style.top = `${down ? at.y + gap : at.y - gap - Math.min(height, above)}px`;
-  }, [at.x, at.y, menu]);
+  }, [at.x, at.y, menu, asking]);
 
   useEffect(() => {
     if (!menu) onClose();
@@ -106,6 +111,12 @@ export function ContextMenu({ at, lens, view, reduced, onGo, onCommand, onToast,
     else if (a.do === "copy") {
       const what = !a.text.includes("\n") && a.text.length <= 48 ? a.text : a.label.replace(/^Copy /, "");
       void copyText(a.text).then((ok) => onToast(ok ? `Copied ${what}` : "Copy failed: the browser blocked the clipboard"));
+    } else if (a.do === "act") {
+      if (a.confirm && asking !== actKey(a)) {
+        setAsking(actKey(a));
+        return;
+      }
+      onAct({ entity: a.entity, action: a.action, label: a.label });
     }
     onClose();
   };
@@ -160,14 +171,15 @@ export function ContextMenu({ at, lens, view, reduced, onGo, onCommand, onToast,
         {menu.sections.map((s, i) => (
           <div key={i} className="ctx-group" role="group">
             {s.map((a) => {
-              const cls = `ctx-item${a.tone ? ` ${a.tone}` : ""}`;
+              const asked = a.do === "act" && !!a.confirm && asking === actKey(a);
+              const cls = `ctx-item${a.tone ? ` ${a.tone}` : ""}${asked ? " asking" : ""}`;
               const body = (
                 <>
                   <span className="g" aria-hidden>
-                    {a.do === "run" ? runGlyph[a.command] : glyph[a.do]}
+                    {a.do === "run" ? runGlyph[a.command] : asked ? "?" : glyph[a.do]}
                   </span>
-                  <span className="l">{a.label}</span>
-                  {a.hint && <span className="h">{a.hint}</span>}
+                  <span className="l">{asked && a.do === "act" ? a.confirm : a.label}</span>
+                  {asked ? <span className="h">again to do it</span> : a.hint && <span className="h">{a.hint}</span>}
                 </>
               );
               const hover = (ev: MouseEvent<HTMLElement>) => ev.currentTarget.focus();
@@ -180,7 +192,7 @@ export function ContextMenu({ at, lens, view, reduced, onGo, onCommand, onToast,
                   {body}
                 </a>
               ) : (
-                <button key={a.label} type="button" role="menuitem" tabIndex={-1} className={cls} onClick={pick} onMouseEnter={hover}>
+                <button key={a.do === "act" ? actKey(a) : a.label} type="button" role="menuitem" tabIndex={-1} className={cls} onClick={pick} onMouseEnter={hover}>
                   {body}
                 </button>
               );

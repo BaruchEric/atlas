@@ -3,10 +3,11 @@ import { describe, expect, test } from "bun:test";
 import { entities, lenses, site } from "@/data/site";
 import { menuFor } from "@/lib/actions";
 import { formatHash, parseHash, settle, type View } from "@/lib/hashState";
+import { emptyActs } from "@/live/acts";
 import { emptyOrbi } from "@/live/orbi";
 import type { Live } from "@/live/prom";
 
-const quiet: Live = { state: "loading", hosts: {}, containers: {}, probes: {}, jobs: {}, devices: {}, orbi: emptyOrbi };
+const quiet: Live = { state: "loading", hosts: {}, containers: {}, probes: {}, jobs: {}, devices: {}, orbi: emptyOrbi, acts: emptyActs };
 
 describe(`site "${site.id}"`, () => {
   test("lens ids and keys are unique", () => {

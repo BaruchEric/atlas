@@ -11,6 +11,8 @@ interface ServerJson {
   prometheus?: string;
   // A command that prints the Orbi's clients and satellites as JSON (see server/orbi.ts).
   orbi?: string;
+  // A command that lists what can be done to each box and does it (see server/act.ts).
+  actions?: string;
   // Host headers the preview server accepts besides localhost, such as ".ts.net".
   allowedHosts?: string[];
   // Files outside the site folder that it imports, which the dev server may then read.
@@ -25,10 +27,12 @@ const file = resolve(siteDir, "server.json");
 const json = (existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {}) as ServerJson;
 const at = (p: string) => resolve(siteDir, p);
 
-// ATLAS_PROM and ATLAS_ORBI override the file, so one checkout can serve from another host.
+// ATLAS_PROM, ATLAS_ORBI and ATLAS_ACTIONS override the file, so one checkout can serve from
+// another host.
 export const serverConfig = {
   prometheus: process.env.ATLAS_PROM || json.prometheus,
   orbi: process.env.ATLAS_ORBI || (json.orbi ? at(json.orbi) : undefined),
+  actions: process.env.ATLAS_ACTIONS || (json.actions ? at(json.actions) : undefined),
   allowedHosts: json.allowedHosts ?? [],
   fsAllow: [siteDir, ...(json.fsAllow ?? []).map(at)],
 };

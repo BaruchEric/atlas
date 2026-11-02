@@ -26,7 +26,7 @@ Keys: `1` to `9` switch sheets, `/` or Cmd-K opens search (names, IPs, MACs, con
 
 The theme menu in the top bar picks the look. Holo, the default, is dark navy with cyan light: the globe gets a lit rim, bloom, land drawn in points of light and an edge-lit flag, and its stars twinkle and its moon goes round (not with reduced motion on). System follows the OS between Light and Dark, the printed-map look of the screenshot at the top. The choice is kept in the browser.
 
-Right-click (long-press on a phone, Shift-F10 on a focused box) opens a menu built for what is under the pointer. A box gets copy actions for its IP, MAC, tailnet IP, ssh command and link, its own web UIs, its Grafana and Prometheus pages, and the other sheets that draw it. When something is wrong the fix leads the menu: a host that stopped reporting opens its Grafana page, a failing probe opens its history, a satellite on wireless backhaul jumps to the MoCA adapter on its wired path.
+Right-click (long-press on a phone, Shift-F10 on a focused box) opens a menu built for what is under the pointer. A box gets copy actions for its IP, MAC, tailnet IP, ssh command and link, its own web UIs, a terminal on it (an `ssh:` link, which Terminal on a Mac and most phone terminals open), its Grafana and Prometheus pages, and the other sheets that draw it. When something is wrong the fix leads the menu: a host that stopped reporting opens its Grafana page, a failing probe opens its history, a satellite on wireless backhaul jumps to the MoCA adapter on its wired path. With an actions command (below), the menu and the panel also do things to the box: switch a plug, restart a container, wake or reboot a host.
 
 ## The globe
 
@@ -109,6 +109,7 @@ A box with an `ip` takes its MAC and "how it's held" from the matching row, so t
 {
   "prometheus": "http://127.0.0.1:9090",
   "orbi": "../scripts/orbi",
+  "actions": "./actions",
   "allowedHosts": [".ts.net", "atlas.example.com"],
   "fsAllow": ["../docs/home-network.md"]
 }
@@ -118,6 +119,7 @@ Paths are relative to the site folder after following any symlink.
 
 - `prometheus` is the target of the `/prom` proxy. `ATLAS_PROM` overrides it.
 - `orbi` is a command for the `/orbi` feed. `ATLAS_ORBI` overrides it.
+- `actions` is a command for `/act`, which does things to boxes (below). `ATLAS_ACTIONS` overrides it.
 - `allowedHosts` lists the Host headers the preview server accepts besides localhost, for `tailscale serve` or a tunnel.
 - `fsAllow` lists files outside the site folder that it imports, so the dev server may read them.
 
@@ -135,6 +137,17 @@ Both servers proxy `/prom` to Prometheus, and pass only `/api/v1/query` and `/ap
 | `sleeps` | with `probe`: a failed probe draws the box powered off, not red. `lan_device_ipp_state`, `lan_device_escl_state` and `lan_device_display` (by `target` IP) add what a printer or scanner reports. |
 
 The `/orbi` feed runs the site's `orbi` command as a bash script, at most once a minute. `orbi devices full` must print a JSON array of attached devices (`mac`, `ip`, `name`, `type` as the band or `wired`, `signal`, `conn_ap_mac`), and `orbi satellites` a JSON array of satellites (`MAC`, `DeviceName`, `BHConnType`). With that, the router and satellites show client counts, a satellite turns red when its backhaul is not wired, every box the Orbi sees says which unit it is on, and a lens's `roams` table moves Wi-Fi boxes to the unit they joined.
+
+## Actions
+
+The right-click menu and the panel can do things to a box: turn a plug or a lamp on and off, lock a door, restart a container, wake or reboot a host. The engine knows nothing about plugs or hosts. The site's `actions` command does, and the servers run it behind `/act`:
+
+- `actions list` prints one JSON object keyed by entity id. Each value has an optional `state` (one word: `on`, `off`, `locked`, `running`, `unavailable`), an optional `text` for the panel, and `actions`, a list of `{ "id", "label" }` with an optional `confirm` (the question to ask first) and `tone: "bad"` for the ones that hurt.
+- `actions run <entity> <action>` does that one thing and prints `{ "ok": true, "text": "..." }` or `{ "ok": false, "error": "..." }`.
+
+The browser only ever names an entity and an action id. The server passes on a pair only when the last `list` offered it, so the page can't make up a command, and the script decides what exists from moment to moment: a plug that is on lists `off`, one that is off lists `on`. The list is polled every 30 s and again right after an action runs. A box's `state` also drives its dot when Prometheus and the Orbi have nothing to say: `on` draws it live, `off` draws it powered off. An action with `confirm` turns into its question on the first press and runs on the second.
+
+`example/actions` is the whole protocol in forty lines of bash: a pretend TV that remembers whether it is on, and a reboot that only says it would. A real house's script talks to Home Assistant, Docker, a hypervisor, or whatever holds the switch; keep its secrets in files the script reads, never in the site data, which is built into the bundle.
 
 ## Publishing it
 
