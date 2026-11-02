@@ -20,6 +20,8 @@ bun run start    # production build, served at http://127.0.0.1:7871
 bun run check    # typecheck, lint, tests, build
 ```
 
+Canopy runs the same dev server from `.canopy/tasks.json` on port 7872, so it can sit beside one you started by hand on 7870. Both tasks run `bun install` first.
+
 Keys: `1` to `9` switch sheets, `/` or Cmd-K opens search (names, IPs, MACs, container names), `Esc` backs out one level, `F` fits the drawing back to the view. Every view has its own URL, such as `#/ingress/@s-photos`, and browser back walks the drill history.
 
 The theme menu in the top bar picks the look. Holo, the default, is dark navy with cyan light: the globe gets a lit rim, bloom, land drawn in points of light and an edge-lit flag, and its stars twinkle and its moon goes round (not with reduced motion on). System follows the OS between Light and Dark, the printed-map look of the screenshot at the top. The choice is kept in the browser.
