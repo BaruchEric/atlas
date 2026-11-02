@@ -3,3 +3,7 @@ dist
 *.tsbuildinfo
 # A real site: a folder or symlink with index.ts. Never committed here.
 site
+# refresh.sh builds beside dist and swaps; its stamp says what the preview was built from.
+dist.next
+dist.prev
+.refresh-stamp
