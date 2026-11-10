@@ -1,18 +1,21 @@
 import { animate, AnimatePresence, motion, type AnimationPlaybackControls } from "motion/react";
 import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref } from "react";
+import { FitIcon, MinusIcon, PlusIcon } from "@/components/icons";
 import { NodeView } from "@/components/NodeView";
 import { entities } from "@/data/site";
 import type { Lens, Net, Place } from "@/data/types";
 import { targetAt, type Target } from "@/lib/actions";
-import { fit, lightUp, pad, routeLens, union, type Rect, type RoutedWire } from "@/lib/geometry";
+import { fit, fitReadable, lightUp, pad, routeLens, union, type Insets, type Rect, type RoutedWire } from "@/lib/geometry";
 import { liveFor, useLive } from "@/live/prom";
 
 interface Props {
   lens: Lens;
   zone?: string;
   node?: string;
-  // How much of the stage the phone bottom sheet covers.
-  cover: "none" | "peek" | "open";
+  // What the bar, the panel and the phone's bottom sheet cover. The drawing runs on under them.
+  insets: Insets;
+  // A box some row in the panel is pointing at.
+  spot?: string | null;
   reduced: boolean;
   onSelect: (id: string | null) => void;
   onZone: (id: string | null) => void;
@@ -39,20 +42,34 @@ function lerpView(a: Rect, b: Rect, t: number): Rect {
   return { x: cx - w / 2, y: cy - h / 2, w, h };
 }
 
+// Screen pixels per drawing unit. Below FAR the names would be specks, so the sheet draws
+// rooms and blocks only; a drill into a room or onto a box never lands below READABLE.
+const FAR = 0.5;
+const READABLE = 0.62;
+
+// What the view is asked to show: the whole sheet, however small that makes it, or a drill
+// into a room or onto a box, which stays readable and keeps anchor in sight if it can't all fit.
+type Frame = { kind: "sheet"; rect: Rect } | { kind: "drill"; rect: Rect; anchor?: Rect };
+
 function hash(s: string): number {
   let h = 0;
   for (const c of s) h = (h * 31 + c.charCodeAt(0)) >>> 0;
   return h;
 }
 
-export function MapCanvas({ lens, zone, node, cover, reduced, onSelect, onZone, onMenu, ref }: Props) {
+export function MapCanvas({ lens, zone, node, insets, spot, reduced, onSelect, onZone, onMenu, ref }: Props) {
   const live = useLive();
   const wrapRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
+  const groundRef = useRef<HTMLDivElement>(null);
+  const lightRef = useRef<HTMLDivElement>(null);
   const view = useRef<Rect>({ x: 0, y: 0, w: lens.width, h: lens.height });
   const flight = useRef<AnimationPlaybackControls | null>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
+  const stageW = useRef(0);
   const [dragging, setDragging] = useState(false);
+  // The box under a mouse pointer: its cables and neighbours light before any click.
+  const [hover, setHover] = useState<string | null>(null);
   const moved = useRef(false);
   const pointers = useRef(new Map<number, { x: number; y: number }>());
   const gesture = useRef<{ view: Rect; x: number; y: number; dist: number } | null>(null);
@@ -62,15 +79,31 @@ export function MapCanvas({ lens, zone, node, cover, reduced, onSelect, onZone, 
   const swallowClick = useRef(0);
 
   const wires = useMemo(() => routeLens(lens), [lens]);
-  const insetBottom = cover === "open" ? Math.min(size.h * 0.58, size.h - 120) : cover === "peek" ? 64 : 0;
   const lit = useMemo(() => (node ? lightUp(lens, wires, node) : null), [lens, wires, node]);
+  const warm = useMemo(() => (hover && hover !== node ? lightUp(lens, wires, hover) : null), [lens, wires, hover, node]);
 
+  // Everything that follows the view without a render: the viewBox, the grid drawn under
+  // the sheet, and how much detail the sheet shows at this scale.
   const apply = useCallback(() => {
     const v = view.current;
     svgRef.current?.setAttribute("viewBox", `${v.x} ${v.y} ${v.w} ${v.h}`);
+    const w = stageW.current;
+    if (!w) return;
+    const k = w / v.w;
+    for (const el of [groundRef.current, lightRef.current]) {
+      if (!el) continue;
+      el.style.setProperty("--k", k.toFixed(4));
+      el.style.setProperty("--ox", `${(-v.x * k).toFixed(1)}px`);
+      el.style.setProperty("--oy", `${(-v.y * k).toFixed(1)}px`);
+      // The fine grid thins out as its cells close up, before it turns to moire.
+      el.style.setProperty("--fine", Math.min(Math.max((40 * k - 9) / 9, 0), 1).toFixed(2));
+    }
+    const lod = k < FAR ? "far" : "near";
+    const wrap = wrapRef.current;
+    if (wrap && wrap.dataset.lod !== lod) wrap.dataset.lod = lod;
   }, []);
 
-  const target = useMemo((): Rect => {
+  const target = useMemo((): Frame => {
     const all = { x: 0, y: 0, w: lens.width, h: lens.height };
     const z = lens.zones.find((x) => x.id === zone);
     const here = node ? lens.places[node] : undefined;
@@ -79,11 +112,16 @@ export function MapCanvas({ lens, zone, node, cover, reduced, onSelect, onZone, 
       const r = union(here.shape === "frame" ? [here] : rects) ?? all;
       const minW = Math.min(lens.width, Math.max(420, lens.width * 0.5));
       const grown = r.w < minW ? { ...r, x: r.x - (minW - r.w) / 2, w: minW } : r;
-      return pad(grown, 40);
+      return { kind: "drill", rect: pad(grown, 40), anchor: here.shape === "frame" ? undefined : here };
     }
-    if (z) return pad(z, 24);
-    return pad(all, 16);
+    if (z) return { kind: "drill", rect: pad(z, 24) };
+    return { kind: "sheet", rect: pad(all, 16) };
   }, [lens, zone, node, lit]);
+
+  const frame = useCallback(
+    (): Rect => (target.kind === "sheet" ? fit(target.rect, size.w, size.h, insets) : fitReadable(target.rect, size.w, size.h, insets, READABLE, target.anchor)),
+    [target, size, insets],
+  );
 
   const flyTo = useCallback(
     (to: Rect, instant: boolean) => {
@@ -111,6 +149,7 @@ export function MapCanvas({ lens, zone, node, cover, reduced, onSelect, onZone, 
     if (!el) return;
     const ro = new ResizeObserver(([entry]) => {
       if (!entry) return;
+      stageW.current = entry.contentRect.width;
       setSize({ w: entry.contentRect.width, h: entry.contentRect.height });
     });
     ro.observe(el);
@@ -120,9 +159,9 @@ export function MapCanvas({ lens, zone, node, cover, reduced, onSelect, onZone, 
   const first = useRef(true);
   useEffect(() => {
     if (!size.w || !size.h) return;
-    flyTo(fit(target, size.w, size.h, insetBottom), first.current);
+    flyTo(frame(), first.current);
     first.current = false;
-  }, [target, size, insetBottom, flyTo]);
+  }, [frame, size, flyTo]);
 
   const zoomBy = useCallback(
     (f: number, cx = size.w / 2, cy = size.h / 2) => {
@@ -144,13 +183,13 @@ export function MapCanvas({ lens, zone, node, cover, reduced, onSelect, onZone, 
   useImperativeHandle(
     ref,
     () => ({
-      fit: () => flyTo(fit(target, size.w, size.h, insetBottom), false),
+      fit: () => flyTo(frame(), false),
       zoomAt: (x, y) => {
         const r = svgRef.current?.getBoundingClientRect();
         if (r) zoomBy(0.6, x - r.left, y - r.top);
       },
     }),
-    [flyTo, target, size, insetBottom, zoomBy],
+    [flyTo, frame, zoomBy],
   );
 
   const openMenu = (el: EventTarget | null, x: number, y: number) => {
@@ -232,7 +271,23 @@ export function MapCanvas({ lens, zone, node, cover, reduced, onSelect, onZone, 
     }
   };
 
+  // A mouse casts a pool of light on the grid. Touch has no pointer to follow.
+  const shine = (e: React.PointerEvent) => {
+    const el = lightRef.current;
+    const r = wrapRef.current?.getBoundingClientRect();
+    if (!el || !r || e.pointerType !== "mouse") return;
+    el.style.setProperty("--px", `${(e.clientX - r.left).toFixed(0)}px`);
+    el.style.setProperty("--py", `${(e.clientY - r.top).toFixed(0)}px`);
+    el.dataset.on = "1";
+  };
+
+  const hoverAt = (e: React.PointerEvent) => {
+    if (e.pointerType !== "mouse" || pointers.current.size) return;
+    setHover(e.target instanceof Element ? (e.target.closest("[data-node]")?.getAttribute("data-node") ?? null) : null);
+  };
+
   const onPointerMove = (e: React.PointerEvent) => {
+    shine(e);
     if (!pointers.current.has(e.pointerId) || !gesture.current || menuPress.current) return;
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     const g = gesture.current;
@@ -262,6 +317,7 @@ export function MapCanvas({ lens, zone, node, cover, reduced, onSelect, onZone, 
         moved.current = true;
         window.clearTimeout(press.current);
         setDragging(true);
+        setHover(null);
         e.currentTarget.setPointerCapture?.(e.pointerId);
       }
       if (moved.current) view.current = { ...g.view, x: g.view.x - dx * s, y: g.view.y - dy * s };
@@ -303,6 +359,8 @@ export function MapCanvas({ lens, zone, node, cover, reduced, onSelect, onZone, 
 
   return (
     <div className="stage" ref={wrapRef}>
+      <div className="ground" ref={groundRef} />
+      <div className="light" ref={lightRef} />
       <svg
         ref={svgRef}
         className={`map${dragging ? " dragging" : ""}`}
@@ -311,6 +369,11 @@ export function MapCanvas({ lens, zone, node, cover, reduced, onSelect, onZone, 
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
+        onPointerOver={hoverAt}
+        onPointerLeave={() => {
+          setHover(null);
+          if (lightRef.current) lightRef.current.dataset.on = "";
+        }}
         onContextMenu={onContextMenu}
         onClickCapture={(e) => {
           if (performance.now() < swallowClick.current) {
@@ -326,19 +389,13 @@ export function MapCanvas({ lens, zone, node, cover, reduced, onSelect, onZone, 
         role="application"
         aria-label={`${lens.title}. Drag to pan, scroll or pinch to zoom.`}
       >
-        <defs>
-          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-            <path className="gridline" d="M40 0H0V40" fill="none" />
-          </pattern>
-        </defs>
-        <rect x={-4000} y={-4000} width={10000} height={10000} fill="url(#grid)" />
 
         <AnimatePresence>
           {backdrops.map((item) => {
             if (item.kind === "frame") {
               const e = entities[item.id];
               if (!e) return null;
-              return <NodeView key={item.id} e={e} p={item.p} live={liveFor(e, live)} selected={node === item.id} dim={!!lit && !lit.nodes.has(item.id)} onPick={onSelect} reduced={reduced} />;
+              return <NodeView key={item.id} e={e} p={item.p} live={liveFor(e, live)} selected={node === item.id} dim={!!lit && !lit.nodes.has(item.id)} near={false} spot={spot === item.id && node !== item.id} onPick={onSelect} reduced={reduced} />;
             }
             const z = item.z;
             return (
@@ -375,7 +432,7 @@ export function MapCanvas({ lens, zone, node, cover, reduced, onSelect, onZone, 
             const isLit = !!lit?.wires.has(w.id);
             const dim = !!lit && !isLit;
             const dashed = w.dashed || w.net === "air";
-            const cls = `wire ${w.net}${w.dashed ? " dashed" : ""}${isLit ? " lit" : ""}${dashed && flowing(w) && !reduced ? " flowing" : ""}`;
+            const cls = `wire ${w.net}${w.dashed ? " dashed" : ""}${isLit ? " lit" : ""}${warm?.wires.has(w.id) ? " warm" : ""}${dashed && flowing(w) && !reduced ? " flowing" : ""}`;
             const opacity = dim ? 0.14 : isOff(w) ? 0.45 : 1;
             return (
               <motion.g key={`${lens.id}:${w.id}`} exit={{ opacity: 0, transition: { duration: 0.18 } }}>
@@ -450,7 +507,7 @@ export function MapCanvas({ lens, zone, node, cover, reduced, onSelect, onZone, 
             .map(([id, p]) => {
               const e = entities[id];
               if (!e) return null;
-              return <NodeView key={id} e={e} p={p} live={liveFor(e, live)} selected={node === id} dim={!!lit && !lit.nodes.has(id)} onPick={onSelect} reduced={reduced} />;
+              return <NodeView key={id} e={e} p={p} live={liveFor(e, live)} selected={node === id} dim={!!lit && !lit.nodes.has(id)} near={id !== hover && !!warm?.nodes.has(id)} spot={spot === id && node !== id} onPick={onSelect} reduced={reduced} />;
             })}
         </AnimatePresence>
       </svg>
@@ -467,13 +524,13 @@ export function MapCanvas({ lens, zone, node, cover, reduced, onSelect, onZone, 
       </div>
       <div className="overlay zoom">
         <button type="button" onClick={() => zoomBy(0.7)} aria-label="Zoom in">
-          +
+          <PlusIcon />
         </button>
         <button type="button" onClick={() => zoomBy(1 / 0.7)} aria-label="Zoom out">
-          −
+          <MinusIcon />
         </button>
-        <button type="button" onClick={() => flyTo(fit(target, size.w, size.h, insetBottom), false)} aria-label="Fit to view" title="Fit (F)">
-          ⤢
+        <button type="button" onClick={() => flyTo(frame(), false)} aria-label="Fit to view" title="Fit (F)">
+          <FitIcon />
         </button>
       </div>
     </div>

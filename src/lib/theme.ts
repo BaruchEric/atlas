@@ -27,6 +27,9 @@ export function applyTheme(theme: Theme) {
   const root = document.documentElement;
   if (theme === "auto") root.removeAttribute("data-theme");
   else root.setAttribute("data-theme", theme);
+  // A phone paints its status bar from this, so it follows the theme too.
+  const bg = getComputedStyle(root).getPropertyValue("--bg").trim();
+  if (bg) document.querySelector('meta[name="theme-color"]')?.setAttribute("content", bg);
   try {
     localStorage.setItem(themeKey, theme);
   } catch {

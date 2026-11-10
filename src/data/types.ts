@@ -170,7 +170,7 @@ export interface Site {
   // "example" for the bundled sample; tests written for the sample skip on any other site.
   id: string;
   title: string;
-  // The small line above the title.
+  // The small line under the title. A phone's bar drops it.
   eyebrow?: string;
   entities: Record<string, Entity>;
   lenses: Lens[];

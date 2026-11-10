@@ -1,11 +1,14 @@
-import { AnimatePresence, motion } from "motion/react";
-import { useState } from "react";
+import { animate, AnimatePresence, motion, useMotionValue, useTransform } from "motion/react";
+import { useEffect, useRef, useState, type PointerEvent, type ReactNode } from "react";
+import { ChevronIcon, CopyIcon } from "@/components/icons";
 import { entities, lenses, network, site } from "@/data/site";
 import type { Entity, Kind, Lens, Net, Status } from "@/data/types";
 import type { Target } from "@/lib/actions";
+import { copyText } from "@/lib/clipboard";
 import { routeFrom, routeLens } from "@/lib/geometry";
+import { sheetRests, type Snap } from "@/lib/sheet";
 import type { ActCall } from "@/live/acts";
-import { liveFor, useLive, useSeries } from "@/live/prom";
+import { liveFor, useLive, useSeries, type Pulse } from "@/live/prom";
 
 const kindName: Record<Kind, string> = {
   router: "Router",
@@ -31,20 +34,44 @@ const kindName: Record<Kind, string> = {
 };
 
 const netColor = (n: Net) => `var(--${n === "wan" ? "ink" : n})`;
+const pulseColor = (p: Pulse) => (p === "up" ? "var(--accent)" : p === "down" ? "var(--bad)" : p === "asleep" ? "color-mix(in srgb, var(--accent) 45%, var(--rule))" : p === "off" ? "var(--muted)" : "var(--rule)");
 
 function Pill({ status, text }: { status: Status; text: string }) {
   return <span className={`pill s-${status}`}>{text}</span>;
 }
 
+// A section heading, with a count or a state beside it in a quieter voice.
+function Heading({ children, aside }: { children: ReactNode; aside?: ReactNode }) {
+  return (
+    <h3>
+      {children}
+      {aside !== undefined && aside !== "" && <small>{aside}</small>}
+    </h3>
+  );
+}
+
+// A reading that rolls to its new value when a poll lands, rather than jumping.
+function Num({ value, digits = 0, reduced }: { value: number; digits?: number; reduced: boolean }) {
+  const mv = useMotionValue(value);
+  const text = useTransform(mv, (v) => v.toFixed(digits));
+  useEffect(() => {
+    const run = animate(mv, value, { duration: reduced ? 0 : 0.7, ease: [0.2, 0.8, 0.2, 1] });
+    return () => run.stop();
+  }, [mv, value, reduced]);
+  return <motion.span>{text}</motion.span>;
+}
+
+const heat = (pct: number) => (pct >= 85 ? " hot" : pct >= 60 ? " warm" : "");
+
 function Spark({ values, max = 100 }: { values: number[]; max?: number }) {
-  if (values.length < 2) return <svg viewBox="0 0 100 34" aria-hidden />;
+  if (values.length < 2) return <svg className="spark" viewBox="0 0 100 34" aria-hidden />;
   const top = Math.max(max, ...values);
   const pts = values.map((v, i) => [(i / (values.length - 1)) * 100, 32 - (v / top) * 30] as const);
   const line = pts.map(([x, y], i) => `${i ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
   return (
-    <svg viewBox="0 0 100 34" preserveAspectRatio="none" aria-hidden>
-      <path d={`${line} L100,34 L0,34 Z`} fill="var(--accent)" opacity={0.12} />
-      <path d={line} fill="none" stroke="var(--accent)" strokeWidth={1.6} vectorEffect="non-scaling-stroke" />
+    <svg className="spark" viewBox="0 0 100 34" preserveAspectRatio="none" aria-hidden>
+      <path className="spark-fill" d={`${line} L100,34 L0,34 Z`} />
+      <path className="spark-line" d={line} vectorEffect="non-scaling-stroke" />
     </svg>
   );
 }
@@ -55,29 +82,33 @@ function uptime(s: number): string {
   return d ? `${d}d ${h}h` : `${h}h ${Math.floor((s % 3600) / 60)}m`;
 }
 
-function ApBlock({ e }: { e: Entity }) {
+function ApBlock({ e, reduced }: { e: Entity; reduced: boolean }) {
   const l = liveFor(e, useLive());
   if (!l.ap) return null;
   const { wifi, wired, bands, backhaul } = l.ap;
   return (
     <section>
-      <h3>Clients now · Orbi</h3>
-      <div className="gauges">
-        <div className="gauge">
+      <Heading>Clients on it now</Heading>
+      <div className="vitals">
+        <div className="vital">
           <span className="k">Wi-Fi</span>
-          <span className="v">{wifi}</span>
+          <span className="v">
+            <Num value={wifi} reduced={reduced} />
+          </span>
         </div>
-        <div className="gauge">
+        <div className="vital">
           <span className="k">Wired</span>
-          <span className="v">{wired}</span>
+          <span className="v">
+            <Num value={wired} reduced={reduced} />
+          </span>
         </div>
       </div>
-      <div className="chips" style={{ marginTop: 6 }}>
+      <div className="chips">
         {Object.entries(bands)
           .sort(([a], [b]) => a.localeCompare(b))
           .map(([band, n]) => (
             <span key={band} className="chip">
-              {band} · {n}
+              {band} <b>{n}</b>
             </span>
           ))}
         {backhaul && <span className={`pill ${backhaul === "wired" ? "s-ok" : "s-bad"}`}>{backhaul} backhaul</span>}
@@ -86,55 +117,65 @@ function ApBlock({ e }: { e: Entity }) {
   );
 }
 
-function LiveBlock({ e }: { e: Entity }) {
+function LiveBlock({ e, reduced }: { e: Entity; reduced: boolean }) {
   const live = useLive();
   const l = liveFor(e, live);
   const series = useSeries(l.host?.up ? e.live?.host : undefined);
-  if (!l.host && l.containers === undefined) return <ApBlock e={e} />;
+  if (!l.host && l.containers === undefined) return <ApBlock e={e} reduced={reduced} />;
   const h = l.host;
   return (
     <section>
-      <h3>Live · Prometheus</h3>
-      <div className="gauges">
+      <Heading>Live from Prometheus</Heading>
+      <div className="vitals">
         {h?.cpu !== undefined && (
-          <div className="gauge">
-            <span className="k">CPU · 1h</span>
+          <div className={`vital${heat(h.cpu)}`}>
+            <span className="k">
+              CPU <em>last hour</em>
+            </span>
             <span className="v">
-              {Math.round(h.cpu)}
+              <Num value={h.cpu} reduced={reduced} />
               <small>%</small>
             </span>
             <Spark values={series?.cpu.map(([, v]) => v) ?? []} />
           </div>
         )}
         {h?.mem !== undefined && !Number.isNaN(h.mem) && (
-          <div className="gauge">
-            <span className="k">Memory · 1h</span>
+          <div className={`vital${heat(h.mem)}`}>
+            <span className="k">
+              Memory <em>last hour</em>
+            </span>
             <span className="v">
-              {Math.round(h.mem)}
+              <Num value={h.mem} reduced={reduced} />
               <small>%</small>
             </span>
             <Spark values={series?.mem.map(([, v]) => v) ?? []} />
           </div>
         )}
         {h?.load !== undefined && (
-          <div className="gauge">
-            <span className="k">Load 1m</span>
-            <span className="v">{h.load.toFixed(2)}</span>
+          <div className="vital">
+            <span className="k">
+              Load <em>1 min</em>
+            </span>
+            <span className="v">
+              <Num value={h.load} digits={2} reduced={reduced} />
+            </span>
             <span className="bar">
               <i style={{ transform: `scaleX(${Math.min(h.load / 8, 1)})` }} />
             </span>
           </div>
         )}
         {h?.uptime !== undefined && (
-          <div className="gauge">
+          <div className="vital">
             <span className="k">Up for</span>
             <span className="v">{uptime(h.uptime)}</span>
           </div>
         )}
         {l.containers !== undefined && (
-          <div className="gauge">
+          <div className="vital">
             <span className="k">Containers</span>
-            <span className="v">{l.containers}</span>
+            <span className="v">
+              <Num value={l.containers} reduced={reduced} />
+            </span>
           </div>
         )}
       </div>
@@ -144,12 +185,14 @@ function LiveBlock({ e }: { e: Entity }) {
 
 interface Nav {
   lens: Lens;
+  reduced: boolean;
   onSelect: (id: string) => void;
   onZone: (id: string | null) => void;
   onLens: (lens: string, node?: string) => void;
   onMenu: (t: Target, x: number, y: number) => void;
   // Runs one of the server's actions on a box; settles when the server has answered.
   onAct: (a: ActCall) => Promise<void>;
+  onToast: (text: string, tone?: "bad") => void;
 }
 
 // What the server's actions command offers for this box. An action that asks first turns
@@ -172,7 +215,7 @@ function ActionsBlock({ e, onAct }: { e: Entity; onAct: (a: ActCall) => Promise<
   };
   return (
     <section>
-      <h3>Actions{offered.text ? ` · ${offered.text}` : offered.state ? ` · ${offered.state.replace(/_/g, " ")}` : ""}</h3>
+      <Heading aside={offered.text ?? offered.state?.replace(/_/g, " ")}>Actions</Heading>
       <div className="acts" onBlur={(ev) => !ev.currentTarget.contains(ev.relatedTarget) && setAsking(null)}>
         {offered.actions.map((a) => {
           const asked = !!a.confirm && asking === a.id;
@@ -188,7 +231,7 @@ function ActionsBlock({ e, onAct }: { e: Entity; onAct: (a: ActCall) => Promise<
   );
 }
 
-function NodeDetail({ e, lens, onSelect, onLens, onAct }: Nav & { e: Entity }) {
+function NodeDetail({ e, lens, reduced, onSelect, onLens, onAct, onToast }: Nav & { e: Entity }) {
   const live = useLive();
   const l = liveFor(e, live);
   const routed = routeLens(lens);
@@ -197,19 +240,22 @@ function NodeDetail({ e, lens, onSelect, onLens, onAct }: Nav & { e: Entity }) {
   const here = lens.places[e.id];
   const inside = here?.shape === "frame" ? Object.entries(lens.places).filter(([id, p]) => id !== e.id && p.x >= here.x && p.y >= here.y && p.x + p.w <= here.x + here.w && p.y + p.h <= here.y + here.h) : [];
   const elsewhere = lenses.filter((x) => x.id !== lens.id && x.view !== "globe" && x.places[e.id]);
+  // An address is something to paste into a terminal, so those rows copy on a press.
   const facts = [
-    { k: "IP", v: e.ip, mono: true },
-    { k: "MAC", v: e.mac, mono: true },
-    { k: "Held by", v: e.how, mono: false },
-    { k: "Seen on", v: l.seen, mono: false },
-    { k: "Tailnet", v: e.tailnet, mono: true },
-    { k: "Where", v: e.where, mono: false },
-    ...(e.facts ?? []).map(([k, v]) => ({ k, v, mono: false })),
-  ].filter((f): f is { k: string; v: string; mono: boolean } => !!f.v);
+    { k: "IP", v: e.ip, copies: true },
+    { k: "MAC", v: e.mac, copies: true },
+    { k: "Held by", v: e.how, copies: false },
+    { k: "Seen on", v: l.seen, copies: false },
+    { k: "Tailnet", v: e.tailnet, copies: true },
+    { k: "Where", v: e.where, copies: false },
+    ...(e.facts ?? []).map(([k, v]) => ({ k, v, copies: false })),
+  ].filter((f): f is { k: string; v: string; copies: boolean } => !!f.v);
+  const copy = (v: string) => void copyText(v).then((ok) => (ok ? onToast(`Copied ${v}`) : onToast("Copy failed: the browser blocked the clipboard", "bad")));
   return (
     <>
       <div className="head">
         <div className="kicker">
+          {l.pulse !== "none" && <i className={`lamp ${l.pulse}`} />}
           {kindName[e.kind]}
           {e.status && <Pill status={e.status} text={e.statusText ?? e.status} />}
           {l.text && <Pill status={l.pulse === "up" ? "ok" : l.pulse === "down" ? "bad" : "off"} text={l.text} />}
@@ -219,20 +265,29 @@ function NodeDetail({ e, lens, onSelect, onLens, onAct }: Nav & { e: Entity }) {
         {!here && <p className="lede">Not drawn on this sheet.</p>}
       </div>
       <ActionsBlock e={e} onAct={onAct} />
-      <LiveBlock e={e} />
+      <LiveBlock e={e} reduced={reduced} />
       {facts.length > 0 && (
         <dl className="facts">
-          {facts.map(({ k, v, mono }) => (
-            <div key={k} style={{ display: "contents" }}>
+          {facts.map(({ k, v, copies }) => (
+            <div key={k} className="fact">
               <dt>{k}</dt>
-              <dd className={mono ? "mono" : undefined}>{v}</dd>
+              <dd className={copies ? "mono" : undefined}>
+                {copies ? (
+                  <button type="button" className="copy" onClick={() => copy(v)} title={`Copy ${v}`}>
+                    {v}
+                    <CopyIcon />
+                  </button>
+                ) : (
+                  v
+                )}
+              </dd>
             </div>
           ))}
         </dl>
       )}
       {inside.length > 0 && (
         <section>
-          <h3>Inside</h3>
+          <Heading aside={inside.length}>Inside</Heading>
           <div className="rows">
             {inside.map(([id]) => {
               const c = entities[id];
@@ -244,7 +299,9 @@ function NodeDetail({ e, lens, onSelect, onLens, onAct }: Nav & { e: Entity }) {
                     <b>{c.label}</b>
                     <small>{c.sub}</small>
                   </span>
-                  <span className="go">→</span>
+                  <span className="go">
+                    <ChevronIcon />
+                  </span>
                 </button>
               );
             })}
@@ -253,9 +310,7 @@ function NodeDetail({ e, lens, onSelect, onLens, onAct }: Nav & { e: Entity }) {
       )}
       {e.groups?.map((g) => (
         <section key={g.name}>
-          <h3>
-            {g.name} · {g.items.length}
-          </h3>
+          <Heading aside={g.items.length}>{g.name}</Heading>
           <div className="chips">
             {g.items.map((it) => (
               <span key={it} className="chip">
@@ -267,7 +322,7 @@ function NodeDetail({ e, lens, onSelect, onLens, onAct }: Nav & { e: Entity }) {
       ))}
       {e.notes && (
         <section>
-          <h3>Notes</h3>
+          <Heading>Notes</Heading>
           <ul>
             {e.notes.map((n) => (
               <li key={n}>{n}</li>
@@ -277,7 +332,7 @@ function NodeDetail({ e, lens, onSelect, onLens, onAct }: Nav & { e: Entity }) {
       )}
       {hops.length > 1 && (
         <section>
-          <h3>Route from {entities[lens.origin ?? ""]?.label ?? "origin"}</h3>
+          <Heading>Route from {entities[lens.origin ?? ""]?.label ?? "origin"}</Heading>
           <ol className="route">
             {hops.map((w) => (
               <li key={w.id} style={{ borderColor: netColor(w.net) }}>
@@ -292,7 +347,7 @@ function NodeDetail({ e, lens, onSelect, onLens, onAct }: Nav & { e: Entity }) {
       )}
       {wires.length > 0 && (
         <section>
-          <h3>Connections on this sheet</h3>
+          <Heading aside={wires.length}>Connections on this sheet</Heading>
           <div className="rows">
             {wires.map((w) => {
               const other = entities[w.from === e.id ? w.to : w.from];
@@ -307,7 +362,9 @@ function NodeDetail({ e, lens, onSelect, onLens, onAct }: Nav & { e: Entity }) {
                     </b>
                     <small>{[w.label, w.status === "plan" ? "planned" : undefined].filter(Boolean).join(" · ") || other.sub}</small>
                   </span>
-                  <span className="go">↗</span>
+                  <span className="go">
+                    <ChevronIcon />
+                  </span>
                 </button>
               );
             })}
@@ -316,11 +373,12 @@ function NodeDetail({ e, lens, onSelect, onLens, onAct }: Nav & { e: Entity }) {
       )}
       {elsewhere.length > 0 && (
         <section>
-          <h3>Also drawn on</h3>
+          <Heading>Also drawn on</Heading>
           <div className="chips">
             {elsewhere.map((x) => (
               <button key={x.id} type="button" className="chip" onClick={() => onLens(x.id, e.id)}>
-                {x.key}. {x.short} →
+                <kbd>{x.key}</kbd>
+                {x.short}
               </button>
             ))}
           </div>
@@ -337,12 +395,12 @@ function ZoneDetail({ lens, zoneId, onSelect }: Nav & { zoneId: string }) {
   return (
     <>
       <div className="head">
-        <div className="kicker">Sheet {lens.key} · area</div>
+        <div className="kicker">Area on sheet {lens.key}</div>
         <h2>{z.label}</h2>
         {z.blurb && <p className="lede">{z.blurb}</p>}
       </div>
       <section>
-        <h3>In here · {members.length}</h3>
+        <Heading aside={members.length}>In here</Heading>
         <div className="rows">
           {members.map(([id]) => {
             const e = entities[id];
@@ -360,42 +418,48 @@ function EntityRow({ e, onSelect }: { e: Entity; onSelect: (id: string) => void 
   const l = liveFor(e, live);
   return (
     <button type="button" className="row" onClick={() => onSelect(e.id)} data-node={e.id}>
-      <span className="swatch" style={{ background: l.pulse === "up" ? "var(--accent)" : l.pulse === "down" ? "var(--bad)" : l.pulse === "asleep" ? "color-mix(in srgb, var(--accent) 45%, var(--rule))" : l.pulse === "off" ? "var(--muted)" : "var(--rule)" }} />
+      <span className="swatch" style={{ background: pulseColor(l.pulse) }} />
       <span className="what">
         <b>{e.label}</b>
         <small>{[e.sub, l.text].filter(Boolean).join(" · ")}</small>
       </span>
-      <span className="go">→</span>
+      <span className="go">
+        <ChevronIcon />
+      </span>
     </button>
   );
 }
 
-function SheetOverview({ lens, onZone, onSelect }: Nav) {
-  const [tab, setTab] = useState<"sheet" | "addresses" | "decisions">("sheet");
+const overviewTabs = ["sheet", "addresses", "decisions"] as const;
+
+function SheetOverview({ lens, reduced, onZone, onSelect }: Nav) {
+  const [tab, setTab] = useState<(typeof overviewTabs)[number]>("sheet");
   const live = useLive();
   const totals = Object.values(live.jobs).reduce((acc, j) => ({ up: acc.up + j.up, total: acc.total + j.total }), { up: 0, total: 0 });
   return (
     <>
       <div className="subtabs" role="tablist">
-        {(["sheet", "addresses", "decisions"] as const).map((t) => (
+        {overviewTabs.map((t) => (
           <button key={t} type="button" role="tab" className="subtab" aria-selected={tab === t} onClick={() => setTab(t)}>
             {t === "sheet" ? `Sheet ${lens.key}` : t === "addresses" ? "Addresses" : "Decisions"}
+            {tab === t && <motion.i layoutId="subtab-line" className="subtab-line" transition={reduced ? { duration: 0 } : { type: "spring", stiffness: 500, damping: 40 }} />}
           </button>
         ))}
       </div>
       {tab === "sheet" && (
         <>
           <div className="head">
-            <div className="kicker">
-              Sheet {lens.key}
-              {live.state === "live" && <Pill status={totals.up === totals.total ? "ok" : "bad"} text={`${totals.up}/${totals.total} targets up`} />}
-            </div>
+            {live.state === "live" && (
+              <div className="kicker">
+                <Pill status={totals.up === totals.total ? "ok" : "bad"} text={`${totals.up}/${totals.total} targets up`} />
+              </div>
+            )}
             <h2>{lens.title}</h2>
             <p className="lede">{lens.blurb}</p>
           </div>
           {lens.zones.length > 0 && (
             <section>
-              <h3>Drill into</h3>
+              <Heading>Drill into</Heading>
               <div className="rows">
                 {lens.zones.map((z) => (
                   <button key={z.id} type="button" className="row" onClick={() => onZone(z.id)}>
@@ -404,7 +468,9 @@ function SheetOverview({ lens, onZone, onSelect }: Nav) {
                       <b>{z.label}</b>
                       <small>{z.blurb}</small>
                     </span>
-                    <span className="go">→</span>
+                    <span className="go">
+                      <ChevronIcon />
+                    </span>
                   </button>
                 ))}
               </div>
@@ -412,7 +478,7 @@ function SheetOverview({ lens, onZone, onSelect }: Nav) {
           )}
           {lens.notes.map((n) => (
             <section key={n.title}>
-              <h3>{n.title}</h3>
+              <Heading>{n.title}</Heading>
               <ul>
                 {n.items.map((it) => (
                   <li key={it}>{it}</li>
@@ -437,17 +503,13 @@ function SheetOverview({ lens, onZone, onSelect }: Nav) {
               {network.addresses.map((row) => {
                 const e = Object.values(entities).find((x) => x.ip === row.address);
                 return (
-                  <tr key={row.address + row.device} onClick={e ? () => onSelect(e.id) : undefined} style={e ? undefined : { cursor: "default" }} data-node={e?.id}>
+                  <tr key={row.address + row.device} className={e ? "links" : undefined} onClick={e ? () => onSelect(e.id) : undefined} data-node={e?.id}>
                     <td className="ip">{site.lan && row.address.startsWith(site.lan) ? "." + row.address.slice(site.lan.length) : row.address}</td>
                     <td>
                       {row.device}
-                      {row.mac && (
-                        <div className="mono" style={{ color: "var(--muted)", fontSize: 11 }}>
-                          {row.mac}
-                        </div>
-                      )}
+                      {row.mac && <div className="mac">{row.mac}</div>}
                     </td>
-                    <td style={{ color: "var(--muted)", fontSize: 12.5 }}>{row.how}</td>
+                    <td className="how">{row.how}</td>
                   </tr>
                 );
               })}
@@ -458,8 +520,8 @@ function SheetOverview({ lens, onZone, onSelect }: Nav) {
       {tab === "decisions" && (
         <>
           <section>
-            <h3>Decided</h3>
-            <div style={{ display: "grid", gap: 10 }}>
+            <Heading aside={network.decided.length}>Decided</Heading>
+            <div className="decisions">
               {network.decided.map(([k, v]) => (
                 <div key={k} className="decision">
                   <b>{k}</b>
@@ -469,7 +531,7 @@ function SheetOverview({ lens, onZone, onSelect }: Nav) {
             </div>
           </section>
           <section>
-            <h3>Open</h3>
+            <Heading aside={network.open.length}>Open</Heading>
             <ul>
               {network.open.map((o) => (
                 <li key={o}>{o}</li>
@@ -486,21 +548,90 @@ function SheetOverview({ lens, onZone, onSelect }: Nav) {
 interface PanelProps extends Nav {
   zone?: string;
   node?: string;
-  sheet: boolean;
-  peek: boolean;
-  onTogglePeek: () => void;
+  // Set in the phone layout only, where the panel is a bottom sheet: how far up it stands.
+  rest: Snap | undefined;
+  onRest: (s: Snap) => void;
+  // A row that stands for a box is under the pointer (or no longer is), so the map can ring it.
+  onSpot: (id: string | null) => void;
 }
 
+const snaps: Snap[] = ["peek", "half", "full"];
+
 export function Panel(props: PanelProps) {
-  const { lens, zone, node, sheet, peek, onTogglePeek, onMenu } = props;
+  const { lens, zone, node, rest, onRest, onMenu, onSpot } = props;
+  const shell = useRef<HTMLElement>(null);
   const e = node ? entities[node] : undefined;
   const title = e ? e.label : zone ? (lens.zones.find((z) => z.id === zone)?.label ?? lens.title) : lens.title;
+  // Under the title on the sheet's handle, so a peeking sheet still says what it holds.
+  const under = e ? (lens.places[e.id]?.sub ?? e.sub ?? kindName[e.kind]) : zone ? `Area on sheet ${lens.key}` : `Sheet ${lens.key}`;
   const key = e ? `n:${e.id}` : zone ? `z:${zone}` : `l:${lens.id}`;
+  const drag = useRef<{ id: number; y: number; h: number; at: number; lastY: number; v: number; moved: boolean } | null>(null);
+  // A drag ends in a click on the handle, which must not also toggle the sheet.
+  const dragged = useRef(false);
+
+  const rests = (): Record<Snap, number> | null => {
+    const frame = shell.current?.offsetParent;
+    if (!(frame instanceof HTMLElement)) return null;
+    return sheetRests(frame.clientHeight, parseFloat(getComputedStyle(frame).getPropertyValue("--bar-h")) || 0);
+  };
+
+  const onDown = (ev: PointerEvent<HTMLButtonElement>) => {
+    const el = shell.current;
+    if (!rest || !el || ev.button > 0) return;
+    drag.current = { id: ev.pointerId, y: ev.clientY, h: el.getBoundingClientRect().height, at: ev.timeStamp, lastY: ev.clientY, v: 0, moved: false };
+    dragged.current = false;
+    ev.currentTarget.setPointerCapture(ev.pointerId);
+  };
+
+  const onMove = (ev: PointerEvent<HTMLButtonElement>) => {
+    const d = drag.current;
+    const el = shell.current;
+    const r = rests();
+    if (!d || !el || !r || ev.pointerId !== d.id) return;
+    const dy = d.y - ev.clientY;
+    if (!d.moved && Math.abs(dy) < 6) return;
+    d.moved = true;
+    dragged.current = true;
+    // Pixels a millisecond, up the screen positive, for the flick on release.
+    const dt = ev.timeStamp - d.at;
+    if (dt > 0) d.v = (d.lastY - ev.clientY) / dt;
+    d.at = ev.timeStamp;
+    d.lastY = ev.clientY;
+    el.dataset.dragging = "1";
+    el.style.height = `${Math.min(Math.max(d.h + dy, r.peek), r.full)}px`;
+  };
+
+  const onUp = (ev: PointerEvent<HTMLButtonElement>) => {
+    const d = drag.current;
+    const el = shell.current;
+    const r = rests();
+    drag.current = null;
+    if (!d || !el || !r || !d.moved) return;
+    const h = el.getBoundingClientRect().height;
+    // A flick goes to the next rest in its direction; a slow release settles on the nearest.
+    const flick = Math.abs(d.v) > 0.45 && ev.type !== "pointercancel";
+    const above = snaps.find((s) => r[s] > h + 1) ?? "full";
+    const below = [...snaps].reverse().find((s) => r[s] < h - 1) ?? "peek";
+    const nearest = snaps.reduce((a, b) => (Math.abs(r[b] - h) < Math.abs(r[a] - h) ? b : a));
+    delete el.dataset.dragging;
+    el.style.height = "";
+    onRest(flick ? (d.v > 0 ? above : below) : nearest);
+  };
+
+  const onHandle = () => {
+    if (dragged.current) {
+      dragged.current = false;
+      return;
+    }
+    onRest(rest === "peek" ? "half" : rest === "half" ? "peek" : "half");
+  };
+
   return (
-    <aside className={`panel${sheet && peek ? " peek" : ""}`} aria-label="Details">
-      <button type="button" className="panel-handle" onClick={onTogglePeek} aria-expanded={!peek}>
+    <aside ref={shell} className="panel" data-rest={rest} aria-label="Details">
+      <button type="button" className="panel-handle" onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp} onClick={onHandle} aria-expanded={rest !== "peek"} aria-label={`${title}. ${rest === "peek" ? "Show details" : "Hide details"}`}>
         <i />
         <span>{title}</span>
+        <small>{under}</small>
       </button>
       <AnimatePresence mode="wait" initial={false}>
         <motion.div
@@ -515,7 +646,17 @@ export function Panel(props: PanelProps) {
             const r = row.getBoundingClientRect();
             onMenu({ kind: "node", id }, ev.clientX || r.left + 24, ev.clientY || r.bottom);
           }}
-          initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.2 }}>
+          // And while the pointer rests on one, the map rings the box it stands for.
+          onPointerOver={(ev) => {
+            if (ev.pointerType !== "mouse") return;
+            onSpot(ev.target instanceof Element ? (ev.target.closest("[data-node]")?.getAttribute("data-node") ?? null) : null);
+          }}
+          onPointerLeave={() => onSpot(null)}
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -4 }}
+          transition={{ duration: props.reduced ? 0 : 0.18 }}
+        >
           {e ? <NodeDetail {...props} e={e} /> : zone ? <ZoneDetail {...props} zoneId={zone} /> : <SheetOverview {...props} />}
         </motion.div>
       </AnimatePresence>

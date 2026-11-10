@@ -24,6 +24,14 @@ Canopy runs the same dev server from `.canopy/tasks.json` on port 7872, so it ca
 
 Keys: `1` to `9` switch sheets, `/` or Cmd-K opens search (names, IPs, MACs, container names), `Esc` backs out one level, `F` fits the drawing back to the view. Every view has its own URL, such as `#/ingress/@s-photos`, and browser back walks the drill history.
 
+The drawing fills the window and the bar, the panel and the controls float over it, so a fit steers the sheet into the part nothing covers. Zoomed far out, a box's name would be a speck, so boxes turn into blocks in their kind's colour, room names grow, and the dots that say what is up get bigger. Zoom in and the lettering comes back. A host that reports its CPU carries a meter along the bottom of its box. Resting the pointer on a box thickens its cables and outlines its neighbours, and resting it on a row in the panel rings the box that row stands for.
+
+When a box stops answering while the page is open, its outline rings once, a toast names it, and every tab whose sheet draws it gets a red dot. The same happens in reverse when it comes back.
+
+Under 860 px wide the panel becomes a bottom sheet with three rests: a title strip, half the screen and nearly all of it. Drag the handle, flick it, or tap it. Picking a box raises a resting sheet, and a drill-in never shrinks the drawing below a size you can read, so a room wider than the phone opens at its top-left corner and pans from there. Addresses in the panel copy when pressed.
+
+<img alt="The example house on a phone under the holo theme: the NAS picked on the wiring sheet, its cables lit, and the bottom sheet raised halfway with its addresses and containers" src="docs/phone-holo.png" width="300">
+
 The theme menu in the top bar picks the look. Holo, the default, is dark navy with cyan light: the globe gets a lit rim, bloom, land drawn in points of light and an edge-lit flag, and its stars twinkle and its moon goes round (not with reduced motion on). System follows the OS between Light and Dark, the printed-map look of the screenshot at the top. The choice is kept in the browser.
 
 Right-click (long-press on a phone, Shift-F10 on a focused box) opens a menu built for what is under the pointer. A box gets copy actions for its IP, MAC, tailnet IP, ssh command and link, its own web UIs, a terminal on it (an `ssh:` link, which Terminal on a Mac and most phone terminals open), its Grafana and Prometheus pages, and the other sheets that draw it. When something is wrong the fix leads the menu: a host that stopped reporting opens its Grafana page, a failing probe opens its history, a satellite on wireless backhaul jumps to the MoCA adapter on its wired path. With an actions command (below), the menu and the panel also do things to the box: switch a plug, restart a container, wake or reboot a host.

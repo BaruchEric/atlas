@@ -1,14 +1,17 @@
 import { useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from "react";
+import { FitIcon, MinusIcon, PlusIcon } from "@/components/icons";
 import type { CanvasHandle } from "@/components/MapCanvas";
 import { canDrawGlobe, GlobeScene, readTokens } from "@/components/GlobeScene";
 import { site } from "@/data/site";
 import type { Lens } from "@/data/types";
 import type { Target } from "@/lib/actions";
+import type { Insets } from "@/lib/geometry";
 import { globeHome } from "@/lib/globe";
 
 interface Props {
   lens: Lens;
-  cover: "none" | "peek" | "open";
+  // What the bar, the panel and the phone's bottom sheet cover. Space runs on under them.
+  insets: Insets;
   reduced: boolean;
   // Where the opening shot comes from: deep space, or up out of the house.
   arrive: "far" | "close";
@@ -20,7 +23,7 @@ interface Props {
 
 // The globe sheet out on Earth: GlobeScene draws it, and the home pin is a real button laid
 // over the canvas, so it keeps the app's type and takes focus.
-export function GlobeCanvas({ lens, cover, reduced, arrive, onEnter, onMenu, ref }: Props) {
+export function GlobeCanvas({ lens, insets, reduced, arrive, onEnter, onMenu, ref }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const pinRef = useRef<HTMLButtonElement>(null);
@@ -36,7 +39,6 @@ export function GlobeCanvas({ lens, cover, reduced, arrive, onEnter, onMenu, ref
   const gesture = useRef<{ x: number; y: number; dist: number; moved: boolean } | null>(null);
   const press = useRef<number | undefined>(undefined);
   const menuPress = useRef(false);
-  const insetBottom = cover === "open" ? Math.min(size.h * 0.58, size.h - 120) : cover === "peek" ? 64 : 0;
 
   useEffect(() => {
     latest.current = { arrive, onEnter };
@@ -97,12 +99,12 @@ export function GlobeCanvas({ lens, cover, reduced, arrive, onEnter, onMenu, ref
   useEffect(() => {
     const scene = sceneRef.current;
     if (!scene || !size.w) return;
-    scene.resize(size.w, size.h, insetBottom);
+    scene.resize(size.w, size.h, insets);
     if (!arrived.current) {
       arrived.current = true;
       scene.arrive(latest.current.arrive);
     } else if (!scene.flying) scene.fit();
-  }, [size, insetBottom]);
+  }, [size, insets]);
 
   // Down onto the roof, then into the house. Without WebGL there is no dive, just the house.
   const enter = () => {
@@ -251,13 +253,13 @@ export function GlobeCanvas({ lens, cover, reduced, arrive, onEnter, onMenu, ref
       )}
       <div className="overlay zoom">
         <button type="button" onClick={() => zoom(0.7)} aria-label="Zoom in">
-          +
+          <PlusIcon />
         </button>
         <button type="button" onClick={() => zoom(1 / 0.7)} aria-label="Zoom out">
-          −
+          <MinusIcon />
         </button>
         <button type="button" onClick={() => sceneRef.current?.fit()} aria-label="Turn home to the front" title="Fit (F)">
-          ⤢
+          <FitIcon />
         </button>
       </div>
     </div>

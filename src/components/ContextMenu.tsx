@@ -2,6 +2,7 @@ import { motion } from "motion/react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import type { Lens } from "@/data/types";
 import { menuFor, targetAt, type Action, type Command, type Target } from "@/lib/actions";
+import { copyText } from "@/lib/clipboard";
 import type { View } from "@/lib/hashState";
 import type { ActCall } from "@/live/acts";
 import { useLive } from "@/live/prom";
@@ -20,31 +21,13 @@ interface Props {
   onGo: (v: View) => void;
   onCommand: (c: Command, x: number, y: number) => void;
   onAct: (a: ActCall) => void;
-  onToast: (text: string) => void;
+  onToast: (text: string, tone?: "bad") => void;
   onReopen: (at: MenuAt) => void;
   onClose: () => void;
 }
 
 const glyph: Record<Action["do"], string> = { go: "→", open: "↗", copy: "⧉", run: "·", act: "▸" };
 const runGlyph: Record<Command, string> = { fit: "⤢", zoom: "+", search: "⌕", back: "←" };
-
-async function copyText(text: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    // No async clipboard (an old Safari, a plain-http origin): a hidden textarea and execCommand.
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    ta.setAttribute("readonly", "");
-    ta.style.cssText = "position:fixed;opacity:0";
-    document.body.appendChild(ta);
-    ta.select();
-    const ok = document.execCommand("copy");
-    ta.remove();
-    return ok;
-  }
-}
 
 export function ContextMenu({ at, lens, view, reduced, onGo, onCommand, onAct, onToast, onReopen, onClose }: Props) {
   const live = useLive();
@@ -110,7 +93,7 @@ export function ContextMenu({ at, lens, view, reduced, onGo, onCommand, onAct, o
     else if (a.do === "run") onCommand(a.command, at.x, at.y);
     else if (a.do === "copy") {
       const what = !a.text.includes("\n") && a.text.length <= 48 ? a.text : a.label.replace(/^Copy /, "");
-      void copyText(a.text).then((ok) => onToast(ok ? `Copied ${what}` : "Copy failed: the browser blocked the clipboard"));
+      void copyText(a.text).then((ok) => (ok ? onToast(`Copied ${what}`) : onToast("Copy failed: the browser blocked the clipboard", "bad")));
     } else if (a.do === "act") {
       if (a.confirm && asking !== actKey(a)) {
         setAsking(actKey(a));
@@ -163,7 +146,7 @@ export function ContextMenu({ at, lens, view, reduced, onGo, onCommand, onAct, o
       >
         <div className="ctx-head">
           <b>
-            {menu.pulse && menu.pulse !== "none" && <i className={`ctx-dot ${menu.pulse}`} />}
+            {menu.pulse && menu.pulse !== "none" && <i className={`lamp ${menu.pulse}`} />}
             <span>{menu.title}</span>
           </b>
           {menu.sub && <small>{menu.sub}</small>}

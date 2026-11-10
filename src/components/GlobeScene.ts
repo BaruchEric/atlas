@@ -8,6 +8,7 @@ import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { fibonacciSphere, landPolygons, unwrapRing, type Ring } from "@/lib/earth";
+import { clearArea, noInsets, type Insets } from "@/lib/geometry";
 import { facing, unit, type Home } from "@/lib/globe";
 
 // The flag is the "site" piece from the world kit (models/recipes/kit_world.py). Globbed
@@ -136,7 +137,7 @@ export class GlobeScene {
   // Home on the unturned globe, as a unit vector.
   private homeAt: THREE.Vector3;
   private tokens: Tokens;
-  private size = { w: 1, h: 1, inset: 0 };
+  private size = { w: 1, h: 1, insets: noInsets };
   private shot: Shot;
   private flight: Flight | null = null;
   private start = performance.now();
@@ -414,12 +415,13 @@ export class GlobeScene {
     return t.dark ? t.paper.clone().lerp(t.fg, 0.18) : t.paper.clone();
   }
 
-  resize(w: number, h: number, inset: number) {
-    this.size = { w: Math.max(1, w), h: Math.max(1, h), inset };
+  resize(w: number, h: number, insets: Insets) {
+    this.size = { w: Math.max(1, w), h: Math.max(1, h), insets };
     this.renderer.setSize(this.size.w, this.size.h, false);
     this.camera.aspect = this.size.w / this.size.h;
-    // Shift the picture up by half the bottom sheet, so what it frames stays in view.
-    this.camera.setViewOffset(this.size.w, this.size.h, 0, inset / 2, this.size.w, this.size.h);
+    // Shift the picture into the middle of what the bar, the panel and the bottom sheet leave
+    // clear, so what it frames stays in view while space runs on under them.
+    this.camera.setViewOffset(this.size.w, this.size.h, (insets.right - insets.left) / 2, (insets.bottom - insets.top) / 2, this.size.w, this.size.h);
     this.camera.updateProjectionMatrix();
     this.post?.composer.setSize(this.size.w, this.size.h);
     const su = this.stars.material.uniforms.scale;
@@ -430,11 +432,13 @@ export class GlobeScene {
 
   // Earth whole and home toward you; the loop drops it a little below the middle.
   overview(): Shot {
-    const vis = this.size.h - this.size.inset;
-    const aspect = this.size.w / Math.max(vis, this.size.h * 0.35);
+    // Earth has to fit the clear part of the stage, but the camera's field of view spans all of it.
+    const clear = clearArea(this.size.w, this.size.h, this.size.insets);
+    const tall = this.size.h / clear.h;
+    const aspect = clear.w / this.size.h;
     const half = Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2));
     const f = facing(this.home.lat, this.home.lon);
-    return { yaw: f.yaw, pitch: f.pitch, dist: Math.max(1.5 / half, 1.5 / (half * aspect)) };
+    return { yaw: f.yaw, pitch: f.pitch, dist: Math.max((1.5 * tall) / half, 1.34 / (half * aspect)) };
   }
 
   // Deep space, Earth small and turned away: where the opening flight starts.

@@ -144,16 +144,58 @@ export function union(rects: Rect[]): Rect | null {
 
 export const pad = (r: Rect, p: number): Rect => ({ x: r.x - p, y: r.y - p, w: r.w + p * 2, h: r.h + p * 2 });
 
-// A viewBox with the stage's aspect ratio that shows target inside the visible part of the
-// stage (the part not covered by a bottom sheet).
-export function fit(target: Rect, stageW: number, stageH: number, insetBottom: number): Rect {
-  const visH = Math.max(stageH - insetBottom, stageH * 0.35);
-  const s = Math.max(target.w / stageW, target.h / visH);
-  const w = stageW * s;
-  const h = stageH * s;
+// How much of each edge of the stage something else covers: the top bar, the details panel
+// beside the map, the phone's bottom sheet.
+export interface Insets {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+}
+
+export const noInsets: Insets = { top: 0, right: 0, bottom: 0, left: 0 };
+
+// The part of the stage nothing covers. It never shrinks below a third of either side, so a
+// tall sheet or a narrow window still leaves the drawing somewhere to go.
+export function clearArea(stageW: number, stageH: number, insets: Insets): Rect {
+  const w = Math.max(stageW - insets.left - insets.right, stageW * 0.35);
+  const h = Math.max(stageH - insets.top - insets.bottom, stageH * 0.35);
+  return { x: insets.left, y: insets.top, w, h };
+}
+
+// A viewBox with the stage's aspect ratio that shows target centred in the clear part of
+// the stage. The drawing runs on under the bar and the panel; only the fit steers round them.
+export function fit(target: Rect, stageW: number, stageH: number, insets: Insets = noInsets): Rect {
+  const clear = clearArea(stageW, stageH, insets);
+  const s = Math.max(target.w / clear.w, target.h / clear.h);
   const cx = target.x + target.w / 2;
   const cy = target.y + target.h / 2;
-  return { x: cx - w / 2, y: cy - (visH * s) / 2, w, h };
+  return { x: cx - (clear.x + clear.w / 2) * s, y: cy - (clear.y + clear.h / 2) * s, w: stageW * s, h: stageH * s };
+}
+
+const clamp = (n: number, lo: number, hi: number) => Math.min(Math.max(n, lo), hi);
+
+// Like fit, but never smaller than minScale screen pixels per drawing unit, which is what
+// keeps a box's label legible on a phone. A target too big to show whole at that scale is
+// shown from its top-left corner, or with anchor (a box inside it) held in the middle.
+export function fitReadable(target: Rect, stageW: number, stageH: number, insets: Insets, minScale: number, anchor?: Rect): Rect {
+  const whole = fit(target, stageW, stageH, insets);
+  if (stageW / whole.w >= minScale) return whole;
+  const s = 1 / minScale;
+  const clear = clearArea(stageW, stageH, insets);
+  // One axis: where the view starts, given the target's and the clear area's extent along it.
+  const along = (t0: number, tLen: number, c0: number, cLen: number, a?: [number, number]) => {
+    const span = cLen * s;
+    if (tLen <= span) return t0 + tLen / 2 - (c0 + cLen / 2) * s;
+    const start = a ? clamp(a[0] + a[1] / 2 - span / 2, t0, t0 + tLen - span) : t0;
+    return start - c0 * s;
+  };
+  return {
+    x: along(target.x, target.w, clear.x, clear.w, anchor && [anchor.x, anchor.w]),
+    y: along(target.y, target.h, clear.y, clear.h, anchor && [anchor.y, anchor.h]),
+    w: stageW * s,
+    h: stageH * s,
+  };
 }
 
 // The hops from origin to id, following wires in their drawn direction. Empty when unreachable.

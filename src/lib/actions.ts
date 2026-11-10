@@ -66,7 +66,7 @@ export function sshUrl(command: string): string | undefined {
 }
 
 // Red now: a live probe or exporter failing, or drawn as broken in the static data.
-function isDown(e: Entity, live: Live): boolean {
+export function isDown(e: Entity, live: Live): boolean {
   return liveFor(e, live).pulse === "down" || e.status === "bad";
 }
 
