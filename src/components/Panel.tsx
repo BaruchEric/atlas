@@ -565,20 +565,22 @@ export function Panel(props: PanelProps) {
   // Under the title on the sheet's handle, so a peeking sheet still says what it holds.
   const under = e ? (lens.places[e.id]?.sub ?? e.sub ?? kindName[e.kind]) : zone ? `Area on sheet ${lens.key}` : `Sheet ${lens.key}`;
   const key = e ? `n:${e.id}` : zone ? `z:${zone}` : `l:${lens.id}`;
-  const drag = useRef<{ id: number; y: number; h: number; at: number; lastY: number; v: number; moved: boolean } | null>(null);
+  // A drag in progress: where it began, the rests it moves between (r), how much of the sheet
+  // showed at the start (h) and shows now, and how fast the finger last moved.
+  const drag = useRef<{ id: number; y: number; r: Record<Snap, number>; h: number; now: number; at: number; lastY: number; v: number; moved: boolean } | null>(null);
   // A drag ends in a click on the handle, which must not also toggle the sheet.
   const dragged = useRef(false);
 
-  const rests = (): Record<Snap, number> | null => {
-    const frame = shell.current?.offsetParent;
-    if (!(frame instanceof HTMLElement)) return null;
-    return sheetRests(frame.clientHeight, parseFloat(getComputedStyle(frame).getPropertyValue("--bar-h")) || 0);
-  };
-
+  // Everything is measured once, as the finger lands, so each move after it only writes a
+  // transform. The sheet is as tall as its highest rest and slides down to show less.
   const onDown = (ev: PointerEvent<HTMLButtonElement>) => {
     const el = shell.current;
-    if (!rest || !el || ev.button > 0) return;
-    drag.current = { id: ev.pointerId, y: ev.clientY, h: el.getBoundingClientRect().height, at: ev.timeStamp, lastY: ev.clientY, v: 0, moved: false };
+    const frame = el?.offsetParent;
+    if (!rest || !el || !(frame instanceof HTMLElement) || ev.button > 0) return;
+    const r = sheetRests(frame.clientHeight, parseFloat(getComputedStyle(frame).getPropertyValue("--bar-h")) || 0);
+    // Read off the screen, so a drag that catches a snap in flight starts where the sheet is.
+    const h = frame.getBoundingClientRect().bottom - el.getBoundingClientRect().top;
+    drag.current = { id: ev.pointerId, y: ev.clientY, r, h, now: h, at: ev.timeStamp, lastY: ev.clientY, v: 0, moved: false };
     dragged.current = false;
     ev.currentTarget.setPointerCapture(ev.pointerId);
   };
@@ -586,8 +588,7 @@ export function Panel(props: PanelProps) {
   const onMove = (ev: PointerEvent<HTMLButtonElement>) => {
     const d = drag.current;
     const el = shell.current;
-    const r = rests();
-    if (!d || !el || !r || ev.pointerId !== d.id) return;
+    if (!d || !el || ev.pointerId !== d.id) return;
     const dy = d.y - ev.clientY;
     if (!d.moved && Math.abs(dy) < 6) return;
     d.moved = true;
@@ -597,24 +598,24 @@ export function Panel(props: PanelProps) {
     if (dt > 0) d.v = (d.lastY - ev.clientY) / dt;
     d.at = ev.timeStamp;
     d.lastY = ev.clientY;
+    d.now = Math.min(Math.max(d.h + dy, d.r.peek), d.r.full);
     el.dataset.dragging = "1";
-    el.style.height = `${Math.min(Math.max(d.h + dy, r.peek), r.full)}px`;
+    el.style.transform = `translateY(${d.r.full - d.now}px)`;
   };
 
   const onUp = (ev: PointerEvent<HTMLButtonElement>) => {
     const d = drag.current;
     const el = shell.current;
-    const r = rests();
     drag.current = null;
-    if (!d || !el || !r || !d.moved) return;
-    const h = el.getBoundingClientRect().height;
+    if (!d || !el || !d.moved) return;
+    const { r, now: h } = d;
     // A flick goes to the next rest in its direction; a slow release settles on the nearest.
     const flick = Math.abs(d.v) > 0.45 && ev.type !== "pointercancel";
     const above = snaps.find((s) => r[s] > h + 1) ?? "full";
     const below = [...snaps].reverse().find((s) => r[s] < h - 1) ?? "peek";
     const nearest = snaps.reduce((a, b) => (Math.abs(r[b] - h) < Math.abs(r[a] - h) ? b : a));
     delete el.dataset.dragging;
-    el.style.height = "";
+    el.style.transform = "";
     onRest(flick ? (d.v > 0 ? above : below) : nearest);
   };
 
@@ -630,8 +631,10 @@ export function Panel(props: PanelProps) {
     <aside ref={shell} className="panel" data-rest={rest} aria-label="Details">
       <button type="button" className="panel-handle" onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp} onClick={onHandle} aria-expanded={rest !== "peek"} aria-label={`${title}. ${rest === "peek" ? "Show details" : "Hide details"}`}>
         <i />
-        <span>{title}</span>
-        <small>{under}</small>
+        <span className="says">
+          <b>{title}</b>
+          <small>{under}</small>
+        </span>
       </button>
       <AnimatePresence mode="wait" initial={false}>
         <motion.div

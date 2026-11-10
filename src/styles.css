@@ -369,7 +369,7 @@ button.chip:hover { border-color: var(--accent); color: var(--accent); }
 .palette input::placeholder { color: var(--muted); opacity: .8; }
 .palette ul { list-style: none; margin: 0; padding: 6px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--rule) transparent; }
 .palette li { display: grid; grid-template-columns: 9px minmax(0, 1fr) auto; gap: 12px; padding: 8px 12px; border-radius: 9px; cursor: pointer; align-items: center; scroll-margin: 6px; }
-.palette li[aria-selected="true"] { background: var(--chip); box-shadow: inset 3px 0 0 var(--accent); }
+.palette li[aria-selected="true"] { background: var(--chip); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 38%, var(--rule)); }
 .palette li b { font-size: 14px; }
 .palette li small { display: block; font: 11.5px var(--mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .palette li .where { font: 12px var(--body); color: var(--muted); text-align: right; white-space: nowrap; }
@@ -462,23 +462,27 @@ button.chip:hover { border-color: var(--accent); color: var(--accent); }
   .tools { gap: 6px; }
   .tabs { order: 3; flex-basis: 100%; margin: 0 -8px; padding: 2px 8px; }
   .tab { padding: 7px 11px; }
-  .panel { top: auto; left: 0; right: 0; bottom: 0; width: auto; height: var(--sheet-h); border-radius: 20px 20px 0 0; border-width: 1px 0 0; background: var(--glass-solid); transition: height .4s var(--ease); }
+  /* The sheet is always as tall as its highest rest and slides down to the others, so a snap
+     or a drag moves one layer and lays nothing out. --sheet-h is how much of it shows. */
+  .panel { --sheet-full: calc(100dvh - var(--bar-h) - 8px); top: auto; left: 0; right: 0; bottom: 0; width: auto; height: var(--sheet-full); transform: translateY(calc(var(--sheet-full) - var(--sheet-h))); border-radius: 20px 20px 0 0; border-width: 1px 0 0; background: var(--glass-solid); transition: transform .4s var(--ease); }
   /* The same three rests as sheetRests in lib/sheet.ts. */
   .panel[data-rest="peek"] { --sheet-h: calc(64px + env(safe-area-inset-bottom, 0px)); }
-  .panel[data-rest="half"] { --sheet-h: max(64px, min(58%, calc(100% - var(--bar-h) - 120px))); }
-  .panel[data-rest="full"] { --sheet-h: calc(100% - var(--bar-h) - 8px); }
+  .panel[data-rest="half"] { --sheet-h: max(64px, min(58dvh, calc(100dvh - var(--bar-h) - 120px))); }
+  .panel[data-rest="full"] { --sheet-h: var(--sheet-full); }
   .panel[data-dragging] { transition: none; }
-  .panel-handle { display: grid; justify-items: center; align-content: start; gap: 1px; height: 64px; padding: 8px 20px 0; border: 0; background: transparent; cursor: grab; width: 100%; touch-action: none; overflow: hidden; transition: height .3s var(--ease); }
-  /* Raised, the sheet's own heading says what it holds, so the handle is only the grip. */
-  .panel:not([data-rest="peek"]) .panel-handle { height: 28px; }
-  .panel-handle :is(span, small) { transition: opacity .2s; }
-  .panel:not([data-rest="peek"]) .panel-handle :is(span, small) { opacity: 0; }
-  .panel-handle i { width: 40px; height: 4px; border-radius: 2px; background: color-mix(in srgb, var(--fg) 28%, transparent); margin-bottom: 6px; transition: background .15s, width .2s var(--ease); }
-  .panel-handle:active i { background: var(--accent); width: 52px; }
-  .panel-handle span { font: 700 14.5px/1.3 var(--body); color: var(--fg); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .panel-handle small { font: 11.5px/1.3 var(--mono); color: var(--muted); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .panel-scroll { padding: 6px 18px calc(26px + env(safe-area-inset-bottom, 0px)); }
-  .panel[data-rest="peek"] .panel-scroll { visibility: hidden; }
+  .panel-handle { position: relative; display: grid; justify-items: center; align-content: start; height: 28px; padding: 8px 0 0; border: 0; background: transparent; cursor: grab; width: 100%; touch-action: none; }
+  .panel-handle i { width: 40px; height: 4px; border-radius: 2px; background: color-mix(in srgb, var(--fg) 28%, transparent); transition: background .15s, transform .2s var(--ease); }
+  .panel-handle:active i { background: var(--accent); transform: scaleX(1.3); }
+  /* What a resting sheet holds, written across the strip that shows. Raised or under a
+     finger, the sheet's own heading says it, and this gives way. */
+  .panel-handle .says { position: absolute; inset: 0 0 auto; height: 64px; padding: 20px 20px 0; display: grid; justify-items: center; align-content: start; gap: 1px; transition: opacity .15s .3s; }
+  .panel:is(:not([data-rest="peek"]), [data-dragging]) .panel-handle .says { opacity: 0; pointer-events: none; transition: opacity .12s; }
+  .panel-handle .says b { font: 700 14.5px/1.3 var(--body); color: var(--fg); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .panel-handle .says small { font: 11.5px/1.3 var(--mono); color: var(--muted); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* The padding lets the last line scroll up into the part of a half-raised sheet that shows. */
+  .panel-scroll { padding: 6px 18px calc(26px + env(safe-area-inset-bottom, 0px) + var(--sheet-full) - var(--sheet-h)); scroll-padding-bottom: calc(var(--sheet-full) - var(--sheet-h)); }
+  /* A resting sheet's contents are out of sight and out of the tab order, once it has landed. */
+  .panel[data-rest="peek"]:not([data-dragging]) .panel-scroll { visibility: hidden; transition: visibility 0s .3s; }
   .addr th { top: -6px; }
   .scrim { padding-top: calc(var(--bar-h) + 8px); }
   .palette { max-height: min(62vh, 520px); }
@@ -490,8 +494,9 @@ button.chip:hover { border-color: var(--accent); color: var(--accent); }
   .topbar { padding-top: max(5px, env(safe-area-inset-top, 0px)); padding-bottom: 5px; }
   .brand .eyebrow, .legend { display: none; }
   .brand h1 { font-size: 15px; }
-  .panel { top: calc(var(--bar-h) + 8px); bottom: 8px; border-radius: 14px; }
-  .panel-scroll { padding: 14px 16px 18px; gap: 16px; }
+  /* Only the panel beside the map. A bottom sheet (it has a data-rest) keeps its own rules. */
+  .panel:not([data-rest]) { top: calc(var(--bar-h) + 8px); bottom: 8px; border-radius: 14px; }
+  .panel:not([data-rest]) .panel-scroll { padding: 14px 16px 18px; gap: 16px; }
 }
 
 /* A finger needs more room than a cursor, and has no hover to find the copy icon with. */
@@ -505,7 +510,7 @@ button.chip:hover { border-color: var(--accent); color: var(--accent); }
 
 @media (prefers-reduced-motion: reduce) {
   .map .wire.flowing, .map .pulse-ring, .map .pulse-breathe, .map .beacon, .livepill .dot { animation: none; }
-  .panel, .panel-handle, .globe-pin, .light, .map .zone-label, .map .node.frame .label, .map .dot, .row .go, .vital .bar i { transition: none; }
+  .panel, .panel-scroll, .panel-handle i, .panel-handle .says, .globe-pin, .light, .map .zone-label, .map .node.frame .label, .map .dot, .row .go, .vital .bar i { transition: none; }
   .stage.globe canvas, .arrive-in > .stage { animation: none; }
   .stage.globe.diving canvas { transition: none; }
 }

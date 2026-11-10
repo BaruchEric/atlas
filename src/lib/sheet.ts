@@ -1,6 +1,6 @@
-// The phone's bottom sheet: how far up it stands, and the heights it rests at. styles.css
-// sets the same three heights, so the drag in Panel and the map's framing in App agree with
-// what is drawn.
+// The phone's bottom sheet: how far up it stands, and how much of it shows at each rest.
+// styles.css slides the sheet to the same three, so the drag in Panel and the map's framing
+// in App agree with what is drawn.
 export type Snap = "peek" | "half" | "full";
 
 // A peeking sheet shows its handle and title only, this many CSS pixels of it.
