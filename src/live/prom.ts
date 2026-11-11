@@ -155,6 +155,8 @@ export interface EntityLive {
   containers?: number;
   // Where the Orbi sees this box right now, and for a router or satellite its client count.
   seen?: string;
+  // The address the Orbi has this box at, set only when it is not the one drawn.
+  lease?: string;
   chip?: string;
   ap?: { name: string; wifi: number; wired: number; bands: Record<string, number>; backhaul?: string };
 }
@@ -222,6 +224,7 @@ function addOrbi(e: Entity, o: Orbi, out: EntityLive): void {
   const c = o.clients[e.mac];
   if (c) {
     out.seen = `${apName(c.ap)} · ${c.band}${c.band !== "wired" && c.signal !== undefined ? ` · signal ${c.signal}` : ""}`;
+    if (c.ip && e.ip && c.ip !== e.ip) out.lease = c.ip;
     if (out.pulse === "none") {
       out.pulse = "up";
       out.text = "on the Orbi";

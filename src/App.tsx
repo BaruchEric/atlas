@@ -5,7 +5,7 @@ import { MapCanvas, type CanvasHandle } from "@/components/MapCanvas";
 import { Panel } from "@/components/Panel";
 import { Search } from "@/components/Search";
 import { TopBar } from "@/components/TopBar";
-import { entities, lensById, lenses } from "@/data/site";
+import { entities, lensById, lenses, network } from "@/data/site";
 import type { Command, Target } from "@/lib/actions";
 import type { Insets } from "@/lib/geometry";
 import { formatHash, parseHash, settle, up, type View } from "@/lib/hashState";
@@ -14,7 +14,7 @@ import { roam, roamSpots } from "@/lib/roam";
 import { sheetRests, type Snap } from "@/lib/sheet";
 import { useSize } from "@/lib/useSize";
 import { runAct, useActsFeed, type ActCall } from "@/live/acts";
-import { useOrbiFeed } from "@/live/orbi";
+import { movedLeases, useOrbiFeed } from "@/live/orbi";
 import { LiveContext, liveFor, useLiveFeed } from "@/live/prom";
 
 // three.js only loads once someone opens the globe sheet.
@@ -166,6 +166,15 @@ export function App() {
     const say = (names: string[], one: string, many: string) => (names.length === 1 ? `${names[0]} ${one}` : `${names[0]} and ${names.length - 1} more ${many}`);
     if (lost.length) setToast((t) => ({ text: say(lost, "stopped answering", "stopped answering"), tone: "bad", n: (t?.n ?? 0) + 1 }));
     else if (back.length) setToast((t) => ({ text: say(back, "is back", "are back"), n: (t?.n ?? 0) + 1 }));
+  }
+
+  // Leases only move when the router hands them out afresh, so more of them moving while the
+  // page is open means it restarted. The count on a first reading is old news and stays quiet.
+  const moved = useMemo(() => Object.keys(movedLeases(network.addresses, orbi)).length, [orbi]);
+  const [leases, setLeases] = useState<number | null>(null);
+  if (orbi.state === "live" && leases !== moved) {
+    setLeases(moved);
+    if (leases !== null && moved > leases) setToast((t) => ({ text: `${moved === 1 ? "1 lease has" : `${moved} leases have`} moved. The router may have restarted.`, tone: "bad", n: (t?.n ?? 0) + 1 }));
   }
 
   // Into the house from Earth, the flat sheet grows out of the roof the dive landed on. A

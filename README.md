@@ -146,6 +146,8 @@ Both servers proxy `/prom` to Prometheus, and pass only `/api/v1/query` and `/ap
 
 The `/orbi` feed runs the site's `orbi` command as a bash script, at most once a minute. `orbi devices full` must print a JSON array of attached devices (`mac`, `ip`, `name`, `type` as the band or `wired`, `signal`, `conn_ap_mac`), and `orbi satellites` a JSON array of satellites (`MAC`, `DeviceName`, `BHConnType`). With that, the router and satellites show client counts, a satellite turns red when its backhaul is not wired, every box the Orbi sees says which unit it is on, and a lens's `roams` table moves Wi-Fi boxes to the unit they joined.
 
+The feed also says which address each MAC holds right now. When that differs from the one the site gives, the box's address line turns amber, its panel adds a "Leased now" row, and the address table prints the new address under the old one. A router restart hands out unreserved leases afresh, so a count of moved leases that jumps raises a toast. Fix the site's address table to clear the marks.
+
 ## Actions
 
 The right-click menu and the panel can do things to a box: turn a plug or a lamp on and off, lock a door, restart a container, wake or reboot a host. The engine knows nothing about plugs or hosts. The site's `actions` command does, and the servers run it behind `/act`:

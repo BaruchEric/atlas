@@ -173,6 +173,7 @@ function nodeMenu(e: Entity, { lens, view, live, base }: MenuContext): Menu {
 
   const copy: Action[] = [];
   if (e.ip) copy.push({ do: "copy", label: "Copy IP", text: e.ip, hint: e.ip });
+  if (l.lease) copy.push({ do: "copy", label: "Copy the IP it has now", text: l.lease, hint: l.lease });
   if (e.mac) copy.push({ do: "copy", label: "Copy MAC", text: e.mac, hint: e.mac });
   if (e.tailnet) copy.push({ do: "copy", label: "Copy tailnet IP", text: e.tailnet, hint: e.tailnet });
   if (e.ssh) copy.push({ do: "copy", label: "Copy ssh command", text: e.ssh, hint: e.ssh });

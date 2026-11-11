@@ -8,6 +8,7 @@ import { copyText } from "@/lib/clipboard";
 import { routeFrom, routeLens } from "@/lib/geometry";
 import { sheetRests, type Snap } from "@/lib/sheet";
 import type { ActCall } from "@/live/acts";
+import { movedLeases } from "@/live/orbi";
 import { liveFor, useLive, useSeries, type Pulse } from "@/live/prom";
 
 const kindName: Record<Kind, string> = {
@@ -243,6 +244,7 @@ function NodeDetail({ e, lens, reduced, onSelect, onLens, onAct, onToast }: Nav 
   // An address is something to paste into a terminal, so those rows copy on a press.
   const facts = [
     { k: "IP", v: e.ip, copies: true },
+    { k: "Leased now", v: l.lease, copies: true },
     { k: "MAC", v: e.mac, copies: true },
     { k: "Held by", v: e.how, copies: false },
     { k: "Seen on", v: l.seen, copies: false },
@@ -259,6 +261,7 @@ function NodeDetail({ e, lens, reduced, onSelect, onLens, onAct, onToast }: Nav 
           {kindName[e.kind]}
           {e.status && <Pill status={e.status} text={e.statusText ?? e.status} />}
           {l.text && <Pill status={l.pulse === "up" ? "ok" : l.pulse === "down" ? "bad" : "off"} text={l.text} />}
+          {l.lease && <Pill status="warn" text="lease moved" />}
         </div>
         <h2>{e.label}</h2>
         {(here?.sub ?? e.sub) && <p className="lede mono">{here?.sub ?? e.sub}</p>}
@@ -436,6 +439,11 @@ function SheetOverview({ lens, reduced, onZone, onSelect }: Nav) {
   const [tab, setTab] = useState<(typeof overviewTabs)[number]>("sheet");
   const live = useLive();
   const totals = Object.values(live.jobs).reduce((acc, j) => ({ up: acc.up + j.up, total: acc.total + j.total }), { up: 0, total: 0 });
+  // Address rows whose MAC the router has somewhere else now, which a router restart causes.
+  const moved = movedLeases(network.addresses, live.orbi);
+  const movedCount = Object.keys(moved).length;
+  const leases = movedCount === 1 ? "1 lease moved" : `${movedCount} leases moved`;
+  const tail = (ip: string) => (site.lan && ip.startsWith(site.lan) ? "." + ip.slice(site.lan.length) : ip);
   return (
     <>
       <div className="subtabs" role="tablist">
@@ -449,9 +457,14 @@ function SheetOverview({ lens, reduced, onZone, onSelect }: Nav) {
       {tab === "sheet" && (
         <>
           <div className="head">
-            {live.state === "live" && (
+            {(live.state === "live" || movedCount > 0) && (
               <div className="kicker">
-                <Pill status={totals.up === totals.total ? "ok" : "bad"} text={`${totals.up}/${totals.total} targets up`} />
+                {live.state === "live" && <Pill status={totals.up === totals.total ? "ok" : "bad"} text={`${totals.up}/${totals.total} targets up`} />}
+                {movedCount > 0 && (
+                  <button type="button" className="pill s-warn" onClick={() => setTab("addresses")} title="Show them in the address table">
+                    {leases}
+                  </button>
+                )}
               </div>
             )}
             <h2>{lens.title}</h2>
@@ -491,6 +504,7 @@ function SheetOverview({ lens, reduced, onZone, onSelect }: Nav) {
       {tab === "addresses" && (
         <>
           {site.addressesLede && <p className="lede">{site.addressesLede}</p>}
+          {movedCount > 0 && <p className="lede moved">{leases} since this table was written. The address the router gives now is under each one.</p>}
           <table className="addr">
             <thead>
               <tr>
@@ -502,9 +516,13 @@ function SheetOverview({ lens, reduced, onZone, onSelect }: Nav) {
             <tbody>
               {network.addresses.map((row) => {
                 const e = Object.values(entities).find((x) => x.ip === row.address);
+                const now = moved[row.address];
                 return (
                   <tr key={row.address + row.device} className={e ? "links" : undefined} onClick={e ? () => onSelect(e.id) : undefined} data-node={e?.id}>
-                    <td className="ip">{site.lan && row.address.startsWith(site.lan) ? "." + row.address.slice(site.lan.length) : row.address}</td>
+                    <td className="ip">
+                      {tail(row.address)}
+                      {now && <span className="now">now {tail(now)}</span>}
+                    </td>
                     <td>
                       {row.device}
                       {row.mac && <div className="mac">{row.mac}</div>}

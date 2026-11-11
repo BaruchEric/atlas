@@ -6,6 +6,8 @@ export interface OrbiClient {
   ap: string;
   band: string;
   signal?: number;
+  // The address the router has this MAC at right now, which a restart can change.
+  ip?: string;
 }
 
 export interface OrbiAp {
@@ -22,20 +24,20 @@ export interface Orbi {
   backhaul: Record<string, string>;
 }
 
-interface Snapshot {
+export interface Snapshot {
   state: "live" | "offline";
   at?: number;
-  clients?: { mac: string; band: string; signal?: number; ap: string }[];
+  clients?: { mac: string; ip?: string; band: string; signal?: number; ap: string }[];
   satellites?: { mac: string; backhaul: string }[];
 }
 
 export const emptyOrbi: Orbi = { state: "loading", clients: {}, aps: {}, backhaul: {} };
 
-function fold(s: Snapshot): Orbi {
+export function fold(s: Snapshot): Orbi {
   if (s.state !== "live") return { ...emptyOrbi, state: "offline" };
   const orbi: Orbi = { state: "live", at: s.at, clients: {}, aps: {}, backhaul: {} };
   for (const c of s.clients ?? []) {
-    orbi.clients[c.mac] = { ap: c.ap, band: c.band, signal: c.signal };
+    orbi.clients[c.mac] = { ap: c.ap, band: c.band, signal: c.signal, ip: c.ip || undefined };
     const ap = (orbi.aps[c.ap] ??= { wifi: 0, wired: 0, bands: {} });
     if (c.band === "wired") ap.wired++;
     else {
@@ -45,6 +47,19 @@ function fold(s: Snapshot): Orbi {
   }
   for (const sat of s.satellites ?? []) orbi.backhaul[sat.mac] = sat.backhaul;
   return orbi;
+}
+
+// Rows of an address table whose MAC the router now has somewhere else, keyed by the address
+// the table gives. A router restart hands out unreserved leases afresh, and this is how the
+// table finds out.
+export function movedLeases(rows: { address: string; mac?: string }[], orbi: Orbi): Record<string, string> {
+  const moved: Record<string, string> = {};
+  if (orbi.state !== "live") return moved;
+  for (const row of rows) {
+    const now = row.mac ? orbi.clients[row.mac]?.ip : undefined;
+    if (now && now !== row.address) moved[row.address] = now;
+  }
+  return moved;
 }
 
 export function useOrbiFeed(): Orbi {

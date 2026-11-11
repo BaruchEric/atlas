@@ -81,13 +81,14 @@ export function NodeView({ e, p, live, selected, dim, near, spot, onPick, reduce
   // Narrow boxes have no room beside the label, so the dot drops to the corner and badges go.
   const narrow = !frame && !ring && p.w < 140;
   const dot: [number, number] = frame ? [p.w - 20, 25] : ring ? [p.w / 2, p.h / 2 - d / 2 + 14] : narrow ? [p.w - 10, p.h - 10] : [p.w - 11, 11];
-  const badge = narrow ? null : e.ups ? { text: "UPS", fill: "var(--ups)" } : e.tag ? { text: e.tag, fill: "var(--tail)" } : null;
+  // A lease that moved outranks the other badges: the address printed under the name is wrong.
+  const badge = narrow ? null : live.lease ? { text: "moved", fill: "var(--warn)" } : e.ups ? { text: "UPS", fill: "var(--ups)" } : e.tag ? { text: e.tag, fill: "var(--tail)" } : null;
   const badgeW = badge ? Math.round(badge.text.length * 5.6 + 8) : 0;
   // A host that reports its CPU carries a meter along its bottom edge. A narrow box keeps
   // its dot in that corner, so the meter stops short of it.
   const cpu = !frame && !ring && h?.up && h.cpu !== undefined && !Number.isNaN(h.cpu) ? Math.min(Math.max(h.cpu, 0), 100) : undefined;
   const meterW = p.w - 20 - (narrow ? 14 : 0);
-  const cls = ["node", shape, e.status ?? (live.pulse === "off" || live.pulse === "asleep" ? live.pulse : ""), selected ? "selected" : "", near ? "near" : ""].join(" ");
+  const cls = ["node", shape, e.status ?? (live.pulse === "off" || live.pulse === "asleep" ? live.pulse : ""), live.lease ? "moved" : "", selected ? "selected" : "", near ? "near" : ""].join(" ");
   const move = reduced ? { duration: 0 } : spring;
 
   const pick = (ev: MouseEvent | KeyboardEvent) => {
@@ -104,7 +105,7 @@ export function NodeView({ e, p, live, selected, dim, near, spot, onPick, reduce
       transition={{ ...move, opacity: { duration: 0.35 } }}
       role="button"
       tabIndex={0}
-      aria-label={`${e.label}${sub ? `, ${sub}` : ""}${live.text ? `, ${live.text}` : ""}`}
+      aria-label={`${e.label}${sub ? `, ${sub}` : ""}${live.text ? `, ${live.text}` : ""}${live.lease ? `, lease moved to ${live.lease}` : ""}`}
       aria-pressed={selected}
       onClick={pick}
       onKeyDown={(ev) => {

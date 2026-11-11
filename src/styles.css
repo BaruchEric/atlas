@@ -192,6 +192,8 @@ kbd { font: 600 10.5px/1.5 var(--mono); color: var(--muted); border: 1px solid v
 .map .node.frame .label { font: 800 17px var(--display); transition: font-size .3s var(--ease); }
 .map .node.ring .label { font: 800 15px var(--display); }
 .map .node .sub { font: 11px var(--mono); fill: var(--muted); }
+/* The router has this box at another address than the one printed here */
+.map .node.moved .sub { fill: var(--warn); }
 .map .node .items { font: 10.5px var(--mono); fill: var(--muted); }
 .map .node .metric { font: 600 10.5px var(--mono); fill: var(--muted); }
 .map .node .tick { opacity: .9; }
@@ -281,6 +283,9 @@ kbd { font: 600 10.5px/1.5 var(--mono); color: var(--muted); border: 1px solid v
 .lamp.asleep { background: transparent; box-shadow: inset 0 0 0 1.5px var(--accent); }
 .lamp.off { background: transparent; box-shadow: inset 0 0 0 1.5px var(--muted); }
 .pill { display: inline-flex; align-items: center; gap: 5px; font: 600 11px var(--mono); padding: 1px 8px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+button.pill { background: none; cursor: pointer; }
+button.pill:hover { background: color-mix(in srgb, currentColor 14%, transparent); }
+button.pill:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .s-ok { color: var(--accent); } .s-warn { color: var(--warn); } .s-bad { color: var(--bad); } .s-plan { color: var(--home); } .s-off { color: var(--muted); }
 .facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; margin: 0; font-size: 13.5px; }
 .fact { display: contents; }
@@ -346,6 +351,8 @@ button.chip:hover { border-color: var(--accent); color: var(--accent); }
 .addr tr.links { cursor: pointer; transition: background .15s; }
 .addr tr.links:hover { background: var(--chip); }
 .addr td.ip { font: 12.5px var(--mono); }
+.addr .now { display: block; font-size: 11.5px; color: var(--warn); }
+.lede.moved { color: var(--warn); }
 .addr td.how { color: var(--muted); font-size: 12.5px; }
 .addr .mac { font: 11px var(--mono); color: var(--muted); }
 .route { list-style: none; margin: 0; padding: 0 0 0 6px; display: grid; gap: 0; }
